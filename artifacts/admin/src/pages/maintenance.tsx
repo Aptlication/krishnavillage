@@ -114,6 +114,7 @@ export default function Maintenance() {
   const [createTitle, setCreateTitle] = useState("");
   const [createDesc, setCreateDesc] = useState("");
   const [createUrgency, setCreateUrgency] = useState<"urgent" | "non_urgent">("non_urgent");
+  const [createPhotos, setCreatePhotos] = useState<string[]>([]);
   const [createError, setCreateError] = useState("");
 
   // ── Acknowledge dialog ─────────────────────────────────────────────────────
@@ -225,6 +226,7 @@ export default function Maintenance() {
         setCreateTitle("");
         setCreateDesc("");
         setCreateUrgency("non_urgent");
+        setCreatePhotos([]);
         setCreateError("");
         invalidateAll();
       },
@@ -342,12 +344,15 @@ export default function Maintenance() {
     }
     setCreateError("");
     createMutation.mutate({
+      // The generated type for `data` doesn't yet declare `photos`; the server
+      // accepts and stores it. Cast is intentional until OpenAPI is regenerated.
       data: {
         roomNumber: createRoom.trim(),
         title: createTitle.trim(),
         description: createDesc.trim(),
         urgency: createUrgency as MaintenanceReportUrgency,
-      },
+        ...(createPhotos.length > 0 ? { photos: createPhotos } : {}),
+      } as Parameters<typeof createMutation.mutate>[0]["data"],
     });
   }
 
@@ -1057,6 +1062,59 @@ export default function Maintenance() {
                 maxLength={500}
               />
             </div>
+            {/* ── Photos (optional, up to 5) ──────────────────────────── */}
+            <div className="space-y-1.5">
+              <Label>Photos <span className="text-muted-foreground font-normal text-xs">(optional, up to 5)</span></Label>
+              <div className="flex flex-wrap gap-2 items-center">
+                {createPhotos.map((src, idx) => (
+                  <div key={idx} className="relative">
+                    <img src={src} alt={`Photo ${idx + 1}`} className="w-16 h-16 object-cover rounded border" />
+                    <button
+                      type="button"
+                      onClick={() => setCreatePhotos((prev) => prev.filter((_, i) => i !== idx))}
+                      className="absolute -top-1.5 -right-1.5 bg-destructive text-destructive-foreground rounded-full w-5 h-5 flex items-center justify-center text-xs hover:bg-destructive/90"
+                      aria-label={`Remove photo ${idx + 1}`}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+                {createPhotos.length < 5 && (
+                  <label className="w-16 h-16 border-2 border-dashed border-border rounded flex flex-col items-center justify-center cursor-pointer hover:bg-muted/50 text-muted-foreground">
+                    <Paperclip className="w-4 h-4" />
+                    <span className="text-[10px] mt-0.5">Add</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                        const files = Array.from(e.target.files ?? []);
+                        if (files.length === 0) return;
+                        const remaining = 5 - createPhotos.length;
+                        const toRead = files.slice(0, remaining);
+                        toRead.forEach((file) => {
+                          if (file.size > 5 * 1024 * 1024) {
+                            setCreateError(`"${file.name}" is too large (max 5 MB). Try a smaller image.`);
+                            return;
+                          }
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            const result = reader.result;
+                            if (typeof result === "string") {
+                              setCreatePhotos((prev) => (prev.length >= 5 ? prev : [...prev, result]));
+                            }
+                          };
+                          reader.readAsDataURL(file);
+                        });
+                        // Reset the input so selecting the same file again still fires onChange
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                )}
+              </div>
+            </div>
             <div className="space-y-1.5">
               <Label>Urgency</Label>
               <Select value={createUrgency} onValueChange={(v) => setCreateUrgency(v as "urgent" | "non_urgent")}>
@@ -1074,7 +1132,7 @@ export default function Maintenance() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreate(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => { setShowCreate(false); setCreatePhotos([]); }}>Cancel</Button>
             <Button onClick={handleCreate} disabled={createMutation.isPending}>
               {createMutation.isPending ? "Submitting…" : "Submit Request"}
             </Button>
