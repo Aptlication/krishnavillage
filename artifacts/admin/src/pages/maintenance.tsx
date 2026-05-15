@@ -82,6 +82,7 @@ interface MaintenanceReportItem {
   resolvedByName?: string | null;
   resolutionNote?: string | null;
   resolvedAt?: string | null;
+  photos?: string[] | null;
 }
 
 interface ReceiptFile {
@@ -125,6 +126,10 @@ export default function Maintenance() {
   const [resolveType, setResolveType] = useState<"actioned" | "delegated">("actioned");
   const [resolveNote, setResolveNote] = useState("");
   const [resolveSignature, setResolveSignature] = useState("");
+
+  // Photo viewer (guest-uploaded maintenance photos)
+  const [photoViewerTarget, setPhotoViewerTarget] = useState<MaintenanceReportItem | null>(null);
+  const [photoViewerIndex, setPhotoViewerIndex] = useState(0);
 
   // ── Expense claim section (within resolve dialog) ──────────────────────────
   const [showExpenseSection, setShowExpenseSection] = useState(false);
@@ -793,6 +798,17 @@ export default function Maintenance() {
                             Staff raised
                           </Badge>
                         )}
+                        {report.photos && report.photos.length > 0 && (
+                          <Badge
+                            variant="outline"
+                            className="text-xs shrink-0 text-purple-700 border-purple-300 bg-purple-50 dark:bg-purple-950/30 dark:text-purple-400 dark:border-purple-700 cursor-pointer hover:bg-purple-100 dark:hover:bg-purple-950/50"
+                            onClick={() => { setPhotoViewerTarget(report); setPhotoViewerIndex(0); }}
+                            data-testid={`photos-badge-${report.id}`}
+                          >
+                            <Paperclip className="w-3 h-3 mr-1" />
+                            {report.photos.length} {report.photos.length === 1 ? "photo" : "photos"}
+                          </Badge>
+                        )}
                         {/* Expense claim badge (resolved tab only) */}
                         {linkedExpense && (
                           <Badge
@@ -1402,6 +1418,93 @@ export default function Maintenance() {
               ) : (
                 "Confirm Sign Off"
               )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Photo viewer dialog (guest-uploaded photos on maintenance reports) ── */}
+      <Dialog
+        open={!!photoViewerTarget}
+        onOpenChange={(o) => { if (!o) { setPhotoViewerTarget(null); setPhotoViewerIndex(0); } }}
+      >
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>
+              {photoViewerTarget?.title ?? "Photos"}
+              {photoViewerTarget?.photos && photoViewerTarget.photos.length > 1 && (
+                <span className="ml-2 text-sm font-normal text-muted-foreground">
+                  {photoViewerIndex + 1} of {photoViewerTarget.photos.length}
+                </span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          {photoViewerTarget?.photos && photoViewerTarget.photos.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-center bg-muted rounded-md overflow-hidden" style={{ minHeight: 300 }}>
+                <img
+                  src={photoViewerTarget.photos[photoViewerIndex]}
+                  alt={`Maintenance photo ${photoViewerIndex + 1}`}
+                  className="max-h-[70vh] max-w-full object-contain"
+                />
+              </div>
+              {photoViewerTarget.photos.length > 1 && (
+                <div className="flex items-center justify-between gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPhotoViewerIndex((i) => Math.max(0, i - 1))}
+                    disabled={photoViewerIndex === 0}
+                  >
+                    ← Previous
+                  </Button>
+                  <div className="flex gap-1.5 flex-wrap justify-center">
+                    {photoViewerTarget.photos.map((p, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => setPhotoViewerIndex(i)}
+                        className={`border-2 rounded ${i === photoViewerIndex ? "border-primary" : "border-transparent opacity-60 hover:opacity-100"}`}
+                      >
+                        <img src={p} alt={`Thumb ${i + 1}`} className="w-14 h-14 object-cover rounded" />
+                      </button>
+                    ))}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPhotoViewerIndex((i) => Math.min(photoViewerTarget!.photos!.length - 1, i + 1))}
+                    disabled={photoViewerIndex >= photoViewerTarget.photos.length - 1}
+                  >
+                    Next →
+                  </Button>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Submitted by {photoViewerTarget.guestName} · Room {photoViewerTarget.roomNumber}
+                {" · "}{photoViewerTarget.createdAt && new Date(photoViewerTarget.createdAt).toLocaleString()}
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                const photo = photoViewerTarget?.photos?.[photoViewerIndex];
+                if (!photo) return;
+                const a = document.createElement("a");
+                a.href = photo;
+                a.download = `maintenance-${photoViewerTarget?.id}-photo-${photoViewerIndex + 1}.jpg`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+              }}
+            >
+              <Download className="w-3.5 h-3.5 mr-1.5" />
+              Download
+            </Button>
+            <Button onClick={() => { setPhotoViewerTarget(null); setPhotoViewerIndex(0); }}>
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>
