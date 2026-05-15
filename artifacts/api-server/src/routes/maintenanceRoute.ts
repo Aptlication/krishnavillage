@@ -79,11 +79,12 @@ maintenanceRouter.post("/maintenance/staff", requireStaffAuth, async (req, res) 
   const staff = (req as unknown as StaffRequest).staff;
   const tenantId = (req as unknown as TenantRequest).tenantId;
 
-  const { roomNumber, title, description, urgency } = req.body as {
+  const { roomNumber, title, description, urgency, photos } = req.body as {
     roomNumber?: unknown;
     title?: unknown;
     description?: unknown;
     urgency?: unknown;
+    photos?: unknown;
   };
 
   if (!title || typeof title !== "string" || !title.trim()) {
@@ -103,6 +104,16 @@ maintenanceRouter.post("/maintenance/staff", requireStaffAuth, async (req, res) 
     return;
   }
 
+  // Optional photo array (base64 data URIs, same format as guest-side reports)
+  let photoArray: string[] | null = null;
+  if (photos !== undefined && photos !== null) {
+    if (!Array.isArray(photos) || !photos.every((p) => typeof p === "string")) {
+      res.status(400).json({ error: "photos must be an array of strings" });
+      return;
+    }
+    photoArray = (photos as string[]).slice(0, 5); // hard cap defence
+  }
+
   const [report] = await db
     .insert(maintenanceReportsTable)
     .values({
@@ -112,6 +123,7 @@ maintenanceRouter.post("/maintenance/staff", requireStaffAuth, async (req, res) 
       title: (title as string).trim(),
       description: (description as string).trim(),
       urgency: urgency as string,
+      photos: photoArray,
       openedByStaffId: staff.staffId,
       openedByName: staff.displayName,
       tenantId,
