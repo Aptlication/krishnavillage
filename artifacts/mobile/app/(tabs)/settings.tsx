@@ -14,6 +14,7 @@ import {
   Switch,
   Text,
   View,
+  TextInput,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -65,7 +66,72 @@ export default function SettingsScreen() {
     }
   }, []);
 
-  async function togglePref(key: keyof NotificationPrefs) {
+  // Client-side mobile normaliser — mirrors the server's coercion.
+  function normaliseMobileSettings(raw: string): string | null {
+    const cleaned = raw.replace(/[\s\-().]/g, "");
+    if (!cleaned) return null;
+    if (/^\+[1-9]\d{6,14}$/.test(cleaned)) return cleaned;
+    if (/^0\d{9}$/.test(cleaned)) return `+61${cleaned.slice(1)}`;
+    if (/^61\d{9}$/.test(cleaned)) return `+${cleaned}`;
+    return null;
+  }
+
+  function openEditProfile() {
+    if (!guest) return;
+    setEditMobile(guest.mobile ?? "");
+    setEditType(guest.accommodationType ?? "room");
+    setEditArrival(guest.arrivalDate ?? "");
+    setEditError(null);
+    setEditProfileOpen(true);
+  }
+
+  async function saveProfile() {
+    if (!guest?.id || !guest.pushToken) return;
+    setEditError(null);
+    const norm = normaliseMobileSettings(editMobile.trim());
+    if (editMobile.trim() && !norm) {
+      setEditError("That mobile number doesn't look right. Try 0412 345 678.");
+      return;
+    }
+    setIsSavingProfile(true);
+    try {
+      const baseUrl = process.env.EXPO_PUBLIC_DOMAIN
+        ? `https://${process.env.EXPO_PUBLIC_DOMAIN}`
+        : "";
+      const resp = await fetchWithTenant(`${baseUrl}/api/guests/${guest.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pushToken: guest.pushToken,
+          name: guest.name,
+          roomNumber: guest.roomNumber,
+          accommodationType: editType,
+          ...(editType === "camping_site" && editArrival ? { arrivalDate: editArrival } : {}),
+          ...(norm ? { mobile: norm } : {}),
+        }),
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({})) as { error?: string };
+        setEditError(data.error ?? "Could not save your profile. Please try again.");
+        setIsSavingProfile(false);
+        return;
+      }
+      const updated = await resp.json() as { mobile?: string | null; accommodationType?: "room" | "cabin" | "camping_site"; arrivalDate?: string | null };
+      setGuest({
+        ...guest,
+        mobile: updated.mobile ?? null,
+        accommodationType: updated.accommodationType ?? editType,
+        arrivalDate: updated.arrivalDate ?? null,
+      });
+      setEditProfileOpen(false);
+    } catch {
+      setEditError("Could not connect. Please check your connection.");
+    } finally {
+      setIsSavingProfile(false);
+    }
+  }
+
+    async function togglePref(key: keyof NotificationPrefs) {
     const updated = { ...prefs, [key]: !prefs[key] };
     setPrefs(updated);
     await AsyncStorage.setItem(PREFS_KEY, JSON.stringify(updated));
@@ -172,9 +238,32 @@ export default function SettingsScreen() {
               <View style={styles.profileInfo}>
                 <Text style={[styles.profileName, { color: colors.foreground }]}>{guest.name}</Text>
                 <Text style={[styles.profileRoom, { color: colors.mutedForeground }]}>
-                  Room {guest.roomNumber}
+                  {guest.accommodationType === "camping_site"
+                    ? `Campsite ${guest.roomNumber}`
+                    : guest.accommodationType === "cabin"
+                    ? `Cabin ${guest.roomNumber}`
+                    : `Room ${guest.roomNumber}`}
                 </Text>
+                {guest.mobile ? (
+                  <Text style={[styles.profileMobileLine, { color: colors.mutedForeground }]}>
+                    {`Mobile: ${guest.mobile}`}
+                  </Text>
+                ) : (
+                  <Text style={[styles.profileMobileLine, { color: colors.warning }]}>
+                    No mobile on file — tap Edit to add one for SMS updates.
+                  </Text>
+                )}
               </View>
+              <Pressable
+                onPress={openEditProfile}
+                style={({ pressed }) => [
+                  styles.editProfileBtn,
+                  { borderColor: colors.border, backgroundColor: colors.muted, opacity: pressed ? 0.75 : 1 },
+                ]}
+              >
+                <Feather name="edit-2" size={14} color={colors.mutedForeground} />
+                <Text style={[styles.editProfileBtnText, { color: colors.foreground }]}>Edit</Text>
+              </Pressable>
             </View>
           </View>
         )}
@@ -347,6 +436,101 @@ export default function SettingsScreen() {
             </>
           )}
         </Animated.View>
+      </Modal>
+
+      {/* ── Edit profile modal ── */}
+      <Modal
+        visible={editProfileOpen}
+        animationType="fade"
+        transparent
+        onRequestClose={() => !isSavingProfile && setEditProfileOpen(false)}
+      >
+        <View style={stylesEdit.modalOverlay}>
+          <View style={[stylesEdit.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[stylesEdit.modalTitle, { color: colors.foreground }]}>Update your profile</Text>
+            <Text style={[stylesEdit.modalBody, { color: colors.mutedForeground }]}>
+              These details let reception send you SMS notifications about your stay.
+            </Text>
+
+            <Text style={[stylesEdit.fieldLabel, { color: colors.foreground, marginTop: 16 }]}>Type</Text>
+            <View style={[stylesEdit.typePickerRow, { borderColor: colors.border, backgroundColor: colors.muted }]}>
+              {(["room", "cabin", "camping_site"] as const).map((t) => {
+                const active = editType === t;
+                const label = t === "room" ? "Room" : t === "cabin" ? "Cabin" : "Camping";
+                return (
+                  <Pressable
+                    key={t}
+                    onPress={() => setEditType(t)}
+                    style={[stylesEdit.typePickerBtn, active && { backgroundColor: colors.card }]}
+                  >
+                    <Text style={[stylesEdit.typePickerBtnText, { color: active ? colors.primary : colors.mutedForeground }]}>
+                      {label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {editType === "camping_site" && (
+              <>
+                <Text style={[stylesEdit.fieldLabel, { color: colors.foreground, marginTop: 12 }]}>Arrival date</Text>
+                <View style={[stylesEdit.inputWrap, { borderColor: colors.input ?? colors.border, backgroundColor: colors.muted }]}>
+                  <TextInput
+                    style={[stylesEdit.input, { color: colors.foreground }]}
+                    placeholder="YYYY-MM-DD"
+                    placeholderTextColor={colors.mutedForeground}
+                    value={editArrival}
+                    onChangeText={setEditArrival}
+                  />
+                </View>
+              </>
+            )}
+
+            <Text style={[stylesEdit.fieldLabel, { color: colors.foreground, marginTop: 12 }]}>Mobile</Text>
+            <View style={[stylesEdit.inputWrap, { borderColor: colors.input ?? colors.border, backgroundColor: colors.muted }]}>
+              <TextInput
+                style={[stylesEdit.input, { color: colors.foreground }]}
+                placeholder="0412 345 678"
+                placeholderTextColor={colors.mutedForeground}
+                value={editMobile}
+                onChangeText={setEditMobile}
+                keyboardType="phone-pad"
+              />
+            </View>
+            <Text style={[stylesEdit.helpText, { color: colors.mutedForeground }]}>
+              Outbound only — replies aren't received. Contact Reception for two-way help.
+            </Text>
+
+            {editError && (
+              <Text style={[stylesEdit.errText, { color: colors.destructive }]}>{editError}</Text>
+            )}
+
+            <View style={stylesEdit.modalActions}>
+              <Pressable
+                onPress={() => setEditProfileOpen(false)}
+                disabled={isSavingProfile}
+                style={({ pressed }) => [
+                  stylesEdit.modalBtnSecondary,
+                  { borderColor: colors.border, opacity: pressed ? 0.8 : 1 },
+                ]}
+              >
+                <Text style={[stylesEdit.modalBtnText, { color: colors.foreground }]}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={saveProfile}
+                disabled={isSavingProfile}
+                style={({ pressed }) => [
+                  stylesEdit.modalBtnPrimary,
+                  { backgroundColor: colors.primary, opacity: pressed ? 0.85 : 1 },
+                ]}
+              >
+                <Text style={[stylesEdit.modalBtnText, { color: colors.primaryForeground }]}>
+                  {isSavingProfile ? "Saving…" : "Save"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
       </Modal>
     </View>
   );
@@ -600,4 +784,27 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     color: "#fff",
   },
+  profileMobileLine: { fontSize: 13, marginTop: 4 },
+  editProfileBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1 },
+  editProfileBtnText: { fontSize: 13, fontWeight: "600" },
+});
+
+
+const stylesEdit = StyleSheet.create({
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", alignItems: "center", justifyContent: "center", paddingHorizontal: 24 },
+  modalCard: { width: "100%", maxWidth: 420, borderRadius: 14, borderWidth: 1, padding: 20 },
+  modalTitle: { fontSize: 18, fontWeight: "700" },
+  modalBody: { fontSize: 13, marginTop: 4, lineHeight: 18 },
+  modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: 8, marginTop: 20 },
+  modalBtnSecondary: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8, borderWidth: 1 },
+  modalBtnPrimary: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
+  modalBtnText: { fontSize: 14, fontWeight: "600" },
+  typePickerRow: { flexDirection: "row", borderWidth: 1, borderRadius: 10, padding: 4, gap: 4, marginTop: 6 },
+  typePickerBtn: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 8, borderRadius: 8 },
+  typePickerBtnText: { fontSize: 13, fontWeight: "600" },
+  inputWrap: { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, marginTop: 6 },
+  input: { flex: 1, paddingVertical: 10, fontSize: 14 },
+  fieldLabel: { fontSize: 13, fontWeight: "600" },
+  helpText: { fontSize: 11, marginTop: 6, lineHeight: 15 },
+  errText: { fontSize: 13, marginTop: 12 },
 });

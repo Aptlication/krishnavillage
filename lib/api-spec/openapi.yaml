@@ -14,6 +14,8 @@ tags:
     description: Guest device registration
   - name: maintenance
     description: Maintenance request management
+  - name: housekeeping
+    description: Housekeeping request management (staff-only)
   - name: notifications
     description: Push notifications
   - name: staff
@@ -418,6 +420,173 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MaintenanceReport"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Report not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /housekeeping:
+    get:
+      operationId: getHousekeepingReports
+      tags: [housekeeping]
+      summary: List housekeeping reports (staff only)
+      security:
+        - staffToken: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [open, in_progress, resolved]
+      responses:
+        "200":
+          description: List of housekeeping reports
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HousekeepingReport"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /housekeeping/staff:
+    post:
+      operationId: createStaffHousekeepingReport
+      tags: [housekeeping]
+      summary: Create a housekeeping report on behalf of staff (staff only)
+      security:
+        - staffToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStaffHousekeepingReportRequest"
+      responses:
+        "201":
+          description: Housekeeping report created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  status:
+                    type: string
+                required:
+                  - id
+                  - status
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /housekeeping/{id}/acknowledge:
+    patch:
+      operationId: acknowledgeHousekeepingReport
+      tags: [housekeeping]
+      summary: Acknowledge a housekeeping report (staff only)
+      security:
+        - staffToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcknowledgeHousekeepingReportRequest"
+      responses:
+        "200":
+          description: Report acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HousekeepingReport"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Report not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Report is not in open status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /housekeeping/{id}/resolve:
+    patch:
+      operationId: resolveHousekeepingReport
+      tags: [housekeeping]
+      summary: Resolve a housekeeping report (staff only)
+      security:
+        - staffToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveHousekeepingReportRequest"
+      responses:
+        "200":
+          description: Report resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HousekeepingReport"
         "400":
           description: Invalid request
           content:
@@ -2096,6 +2265,102 @@ components:
           type: string
 
     ResolveMaintenanceReportRequest:
+      type: object
+      properties:
+        resolution:
+          type: string
+          enum: [actioned, delegated]
+        resolutionNote:
+          type: string
+      required:
+        - resolution
+
+    HousekeepingReport:
+      type: object
+      properties:
+        id:
+          type: integer
+        source:
+          type: string
+        guestName:
+          type: string
+        roomNumber:
+          type: string
+        openedByName:
+          type: string
+          nullable: true
+        title:
+          type: string
+        description:
+          type: string
+        urgency:
+          type: string
+          enum: [urgent, non_urgent]
+        status:
+          type: string
+          enum: [open, in_progress, resolved]
+        inProgressAt:
+          type: string
+          nullable: true
+        inProgressByName:
+          type: string
+          nullable: true
+        inProgressNote:
+          type: string
+          nullable: true
+        resolution:
+          type: string
+          enum: [actioned, delegated]
+          nullable: true
+        resolvedByStaffId:
+          type: integer
+          nullable: true
+        resolvedByName:
+          type: string
+          nullable: true
+        resolutionNote:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        resolvedAt:
+          type: string
+          nullable: true
+      required:
+        - id
+        - guestName
+        - roomNumber
+        - title
+        - description
+        - urgency
+        - status
+        - createdAt
+
+    CreateStaffHousekeepingReportRequest:
+      type: object
+      properties:
+        roomNumber:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        urgency:
+          type: string
+          enum: [urgent, non_urgent]
+      required:
+        - roomNumber
+        - title
+        - description
+        - urgency
+
+    AcknowledgeHousekeepingReportRequest:
+      type: object
+      properties:
+        inProgressNote:
+          type: string
+
+    ResolveHousekeepingReportRequest:
       type: object
       properties:
         resolution:

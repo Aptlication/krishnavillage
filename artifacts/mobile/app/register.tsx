@@ -87,6 +87,19 @@ function Icon({ name, size, color, style }: { name: string; size: number; color:
   return <Feather name={name as never} size={size} color={color} style={style} />;
 }
 
+/**
+ * Client-side mobile-number coercion. Mirrors the server normaliser so we
+ * surface clear inline feedback before submitting. Returns null on invalid.
+ */
+function normaliseMobile(raw: string): string | null {
+  const cleaned = raw.replace(/[\s\-().]/g, "");
+  if (!cleaned) return null;
+  if (/^\+[1-9]\d{6,14}$/.test(cleaned)) return cleaned;
+  if (/^0\d{9}$/.test(cleaned)) return `+61${cleaned.slice(1)}`;
+  if (/^61\d{9}$/.test(cleaned)) return `+${cleaned}`;
+  return null;
+}
+
 export default function RegisterScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -99,6 +112,16 @@ export default function RegisterScreen() {
   const [error, setError] = useState<string | null>(null);
   const [isDuplicate, setIsDuplicate] = useState(false);
   const [isRoomTaken, setIsRoomTaken] = useState(false);
+  // ─── New fields (accommodation type / mobile / arrival date) ───────────────
+  // Three accommodation types share the room input; camping_site relaxes the
+  // requirement and auto-assigns CAMP-NNN server-side if the field is empty.
+  const [accommodationType, setAccommodationType] = useState<"room" | "cabin" | "camping_site">("room");
+  const [mobile, setMobile] = useState("");
+  const [arrivalDate, setArrivalDate] = useState(""); // YYYY-MM-DD for camping
+  // Camping-disambiguation flow: when /login returns 409 needs_arrival_date,
+  // we show a modal asking for the arrival date and replay the request with it.
+  const [needsArrivalDate, setNeedsArrivalDate] = useState(false);
+  const [arrivalDatePromptValue, setArrivalDatePromptValue] = useState("");
 
   const baseUrl = process.env.EXPO_PUBLIC_DOMAIN
     ? `https://${process.env.EXPO_PUBLIC_DOMAIN}`
@@ -167,9 +190,33 @@ export default function RegisterScreen() {
     setIsRoomTaken(false);
   }
 
-  async function handleSubmit() {
+  /**
+   * Submit handler — used by both register and login flows. Accepts an optional
+   * arrivalDateOverride so the camping-disambiguation modal can replay the
+   * request with the date the guest just entered.
+   */
+  async function handleSubmit(arrivalDateOverride?: string) {
     if (!name.trim()) { setError("Please enter your surname"); return; }
-    if (!roomNumber.trim()) { setError("Please enter your room number"); return; }
+    // Room/cabin require a number; camping_site does not (server auto-assigns).
+    if (accommodationType !== "camping_site" && !roomNumber.trim()) {
+      setError(`Please enter your ${accommodationType === "cabin" ? "cabin" : "room"} number`);
+      return;
+    }
+
+    // Mobile is mandatory at registration. On returning-guest login we let it
+    // through empty because the existing record already has one on file.
+    let normalisedMobile: string | null = null;
+    if (mode === "register") {
+      if (!mobile.trim()) {
+        setError("Please enter your mobile number — used for SMS notifications.");
+        return;
+      }
+      normalisedMobile = normaliseMobile(mobile.trim());
+      if (!normalisedMobile) {
+        setError("That mobile number doesn't look right. Please enter it like 0412 345 678.");
+        return;
+      }
+    }
 
     setError(null);
     setIsDuplicate(false);
@@ -180,6 +227,8 @@ export default function RegisterScreen() {
     try {
       const { token: pushToken, webPushSubscription } = await getPushCredentials();
       const room = roomNumber.trim().toUpperCase();
+      const effectiveArrival =
+        arrivalDateOverride ?? (accommodationType === "camping_site" ? arrivalDate : "");
 
       const endpoint = mode === "register" ? "/api/guests/register" : "/api/guests/login";
       const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -189,6 +238,9 @@ export default function RegisterScreen() {
           name: name.trim(),
           roomNumber: room,
           pushToken,
+          accommodationType,
+          ...(effectiveArrival ? { arrivalDate: effectiveArrival } : {}),
+          ...(normalisedMobile ? { mobile: normalisedMobile } : {}),
           ...(webPushSubscription ? { webPushSubscription } : {}),
         }),
       });
@@ -199,8 +251,13 @@ export default function RegisterScreen() {
           setIsDuplicate(true);
         } else if (response.status === 409 && data.code === "room_taken") {
           setIsRoomTaken(true);
+        } else if (response.status === 409 && data.code === "needs_arrival_date") {
+          // Two camping guests share this surname — ask the guest which stay.
+          setNeedsArrivalDate(true);
         } else if (response.status === 404) {
-          setError("No registration found for that surname and room number. Please register as a new guest.");
+          setError("No registration found for that surname and room. Please register as a new guest.");
+        } else if (response.status === 400 && data.code === "mobile_required") {
+          setError(data.error ?? "A valid mobile number is required.");
         } else {
           setError(data.error ?? (mode === "register" ? "Registration failed. Please try again." : "Login failed. Please try again."));
         }
@@ -208,13 +265,14 @@ export default function RegisterScreen() {
         return;
       }
 
-      const data = await response.json() as { id?: number };
+      const data = await response.json() as { id?: number; roomNumber?: string };
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       setGuest({
         id: data.id,
         name: name.trim(),
-        roomNumber: room,
+        // Use the server's roomNumber (handles auto-assigned CAMP-NNN for camping).
+        roomNumber: data.roomNumber ?? room,
         pushToken,
         registeredAt: new Date().toISOString(),
       });
@@ -317,6 +375,34 @@ export default function RegisterScreen() {
           )}
 
           <View style={styles.fields}>
+            {/* Accommodation Type — three pill buttons. Camping relaxes the
+                room-number requirement and lets the server auto-assign CAMP-NNN. */}
+            <View style={styles.fieldGroup}>
+              <Text style={[styles.label, { color: colors.foreground }]}>Type of accommodation</Text>
+              <View style={[styles.typePickerRow, { borderColor: colors.border, backgroundColor: colors.muted }]}>
+                {(["room", "cabin", "camping_site"] as const).map((t) => {
+                  const active = accommodationType === t;
+                  const label = t === "room" ? "Room" : t === "cabin" ? "Cabin" : "Camping";
+                  const iconName = t === "room" ? "home" : t === "cabin" ? "home" : "alert-circle";
+                  return (
+                    <Pressable
+                      key={t}
+                      onPress={() => setAccommodationType(t)}
+                      style={[
+                        styles.typePickerBtn,
+                        active && { backgroundColor: colors.card, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
+                      ]}
+                    >
+                      <Icon name={iconName} size={14} color={active ? colors.primary : colors.mutedForeground} />
+                      <Text style={[styles.typePickerBtnText, { color: active ? colors.primary : colors.mutedForeground }]}>
+                        {label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+
             {/* Name */}
             <View style={styles.fieldGroup}>
               <Text style={[styles.label, { color: colors.foreground }]}>Surname</Text>
@@ -335,24 +421,74 @@ export default function RegisterScreen() {
               </View>
             </View>
 
-            {/* Room */}
+            {/* Room / Cabin / Site number — required for room+cabin, optional for camping. */}
             <View style={styles.fieldGroup}>
-              <Text style={[styles.label, { color: colors.foreground }]}>Room Number</Text>
+              <Text style={[styles.label, { color: colors.foreground }]}>
+                {accommodationType === "camping_site"
+                  ? "Site number (optional)"
+                  : accommodationType === "cabin"
+                  ? "Cabin Number"
+                  : "Room Number"}
+              </Text>
               <View style={[styles.inputWrapper, { borderColor: colors.input, backgroundColor: colors.muted }]}>
                 <Icon name="home" size={18} color={colors.mutedForeground} style={styles.inputIcon} />
                 <TextInput
                   style={[styles.input, { color: colors.foreground }]}
-                  placeholder="e.g. 12"
+                  placeholder={accommodationType === "camping_site" ? "Leave blank for auto CAMP-NNN" : "e.g. 12"}
                   placeholderTextColor={colors.mutedForeground}
                   value={roomNumber}
                   onChangeText={setRoomNumber}
                   autoCapitalize="characters"
                   keyboardType="default"
-                  returnKeyType="done"
-                  onSubmitEditing={handleSubmit}
+                  returnKeyType="next"
                 />
               </View>
             </View>
+
+            {/* Arrival date — camping only. Used to disambiguate returning-guest
+                login when multiple campers share a surname. */}
+            {accommodationType === "camping_site" && (
+              <View style={styles.fieldGroup}>
+                <Text style={[styles.label, { color: colors.foreground }]}>Arrival date</Text>
+                <View style={[styles.inputWrapper, { borderColor: colors.input, backgroundColor: colors.muted }]}>
+                  <Icon name="alert-circle" size={18} color={colors.mutedForeground} style={styles.inputIcon} />
+                  <TextInput
+                    style={[styles.input, { color: colors.foreground }]}
+                    placeholder="YYYY-MM-DD"
+                    placeholderTextColor={colors.mutedForeground}
+                    value={arrivalDate}
+                    onChangeText={setArrivalDate}
+                    keyboardType={Platform.OS === "web" ? "default" : "numbers-and-punctuation"}
+                    returnKeyType="next"
+                  />
+                </View>
+              </View>
+            )}
+
+            {/* Mobile — required for new registrations so SMS notifications can fire. */}
+            {mode === "register" && (
+              <View style={styles.fieldGroup}>
+                <Text style={[styles.label, { color: colors.foreground }]}>Mobile number</Text>
+                <View style={[styles.inputWrapper, { borderColor: colors.input, backgroundColor: colors.muted }]}>
+                  <Icon name="user" size={18} color={colors.mutedForeground} style={styles.inputIcon} />
+                  <TextInput
+                    style={[styles.input, { color: colors.foreground }]}
+                    placeholder="0412 345 678"
+                    placeholderTextColor={colors.mutedForeground}
+                    value={mobile}
+                    onChangeText={setMobile}
+                    keyboardType="phone-pad"
+                    autoComplete="tel"
+                    returnKeyType="done"
+                    onSubmitEditing={() => handleSubmit()}
+                  />
+                </View>
+                <Text style={[styles.helpText, { color: colors.mutedForeground }]}>
+                  Required — Krishna Village will send you SMS updates about maintenance,
+                  housekeeping and reception. (Outbound only — replies aren't received.)
+                </Text>
+              </View>
+            )}
           </View>
 
           {isDuplicate && (
@@ -433,6 +569,55 @@ export default function RegisterScreen() {
         </View>
       </ScrollView>
 
+      {/* ── Camping disambiguation modal ── */}
+      <Modal
+        visible={needsArrivalDate}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setNeedsArrivalDate(false)}
+      >
+        <View style={styles.roomTakenOverlay}>
+          <View style={[styles.roomTakenCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View style={[styles.roomTakenIconWrap, { backgroundColor: colors.primary + "15" }]}>
+              <Feather name="calendar" size={28} color={colors.primary} />
+            </View>
+            <Text style={[styles.roomTakenTitle, { color: colors.foreground }]}>
+              One more thing…
+            </Text>
+            <Text style={[styles.roomTakenBody, { color: colors.mutedForeground }]}>
+              More than one camping guest with that surname was found. Please confirm
+              your arrival date to sign in.
+            </Text>
+            <View style={[styles.inputWrapper, { borderColor: colors.input, backgroundColor: colors.muted, marginTop: 12, marginBottom: 12 }]}>
+              <TextInput
+                style={[styles.input, { color: colors.foreground }]}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor={colors.mutedForeground}
+                value={arrivalDatePromptValue}
+                onChangeText={setArrivalDatePromptValue}
+                autoFocus
+              />
+            </View>
+            <Pressable
+              onPress={() => {
+                if (!arrivalDatePromptValue.trim()) return;
+                const v = arrivalDatePromptValue.trim();
+                setNeedsArrivalDate(false);
+                setArrivalDatePromptValue("");
+                // Retry login with the supplied arrival date.
+                handleSubmit(v);
+              }}
+              style={({ pressed }) => [
+                styles.roomTakenBtn,
+                { backgroundColor: colors.primary, opacity: pressed ? 0.85 : 1 },
+              ]}
+            >
+              <Text style={[styles.roomTakenBtnText, { color: colors.primaryForeground }]}>Continue</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── Room-Taken Blocking Modal ── */}
       <Modal
         visible={isRoomTaken}
@@ -475,6 +660,31 @@ export default function RegisterScreen() {
 }
 
 const styles = StyleSheet.create({
+  typePickerRow: {
+    flexDirection: "row",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 4,
+    gap: 4,
+  },
+  typePickerBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  typePickerBtnText: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  helpText: {
+    fontSize: 11,
+    marginTop: 6,
+    lineHeight: 15,
+  },
   container: { flex: 1 },
   closeButton: {
     position: "absolute",

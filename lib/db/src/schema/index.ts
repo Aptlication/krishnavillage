@@ -2,6 +2,8 @@ export * from "./tenants";
 export * from "./guestRegistrations";
 export * from "./notifications";
 export * from "./maintenanceReports";
+export * from "./housekeepingReports";
+export * from "./smsMessages";
 export * from "./staffAccounts";
 export * from "./staffPushSubscriptions";
 export * from "./expenseClaims";

@@ -2,10 +2,10 @@ import { pgTable, text, serial, timestamp, json, integer } from "drizzle-orm/pg-
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
-export const maintenanceReportsTable = pgTable("maintenance_reports", {
+export const housekeepingReportsTable = pgTable("housekeeping_reports", {
   id: serial("id").primaryKey(),
   // Who raised the issue
-  source: text("source").notNull().default("guest"), // "guest" | "staff"
+  source: text("source").notNull().default("staff"), // "guest" | "staff"
   guestName: text("guest_name").notNull(),
   roomNumber: text("room_number").notNull(),
   openedByStaffId: integer("opened_by_staff_id"),
@@ -15,18 +15,18 @@ export const maintenanceReportsTable = pgTable("maintenance_reports", {
   description: text("description").notNull(),
   urgency: text("urgency").notNull(), // "urgent" | "non_urgent"
   photos: json("photos").$type<string[]>(),
-  // Lifecycle: open → in_progress → resolved
+  // Lifecycle: open -> in_progress -> resolved
   status: text("status").notNull().default("open"), // "open" | "in_progress" | "resolved"
   createdAt: timestamp("created_at").notNull().defaultNow(),
   // Acknowledged (in_progress)
   inProgressAt: timestamp("in_progress_at"),
   inProgressByStaffId: integer("in_progress_by_staff_id"),
   inProgressByName: text("in_progress_by_name"),
-  inProgressNote: text("in_progress_note"), // e.g. "Assigned to plumber"
+  inProgressNote: text("in_progress_note"), // e.g. "Assigned to HK 2"
   // ETA captured at acknowledge time. Exactly one of etaHours / etaText is
   // populated: etaHours (1, 2, 4, 24, 48) for preset choices; etaText for the
   // "Other" free-text option (e.g. "by tomorrow morning"). Communicated to
-  // the guest as a *cautious estimate only*.
+  // the guest as an estimate only.
   etaHours: integer("eta_hours"),
   etaText: text("eta_text"),
   // Resolved (sign-off)
@@ -40,7 +40,7 @@ export const maintenanceReportsTable = pgTable("maintenance_reports", {
   tenantId: integer("tenant_id").notNull().default(1),
 });
 
-export const insertMaintenanceReportSchema = createInsertSchema(maintenanceReportsTable).omit({
+export const insertHousekeepingReportSchema = createInsertSchema(housekeepingReportsTable).omit({
   id: true,
   createdAt: true,
   resolvedAt: true,
@@ -58,5 +58,5 @@ export const insertMaintenanceReportSchema = createInsertSchema(maintenanceRepor
   source: true,
 });
 
-export type InsertMaintenanceReport = z.infer<typeof insertMaintenanceReportSchema>;
-export type MaintenanceReport = typeof maintenanceReportsTable.$inferSelect;
+export type InsertHousekeepingReport = z.infer<typeof insertHousekeepingReportSchema>;
+export type HousekeepingReport = typeof housekeepingReportsTable.$inferSelect;

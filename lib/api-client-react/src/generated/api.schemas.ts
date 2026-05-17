@@ -9,11 +9,25 @@ export interface HealthStatus {
   status: string;
 }
 
+export type AccommodationType =
+  (typeof AccommodationType)[keyof typeof AccommodationType];
+
+export const AccommodationType = {
+  room: "room",
+  cabin: "cabin",
+  camping_site: "camping_site",
+} as const;
+
 export interface UpdateGuestRequest {
   /** The guest's push token — proves ownership of this profile */
   pushToken: string;
   name: string;
   roomNumber: string;
+  accommodationType?: AccommodationType;
+  /** ISO date (YYYY-MM-DD) — used for camping disambiguation only */
+  arrivalDate?: string | null;
+  /** E.164 mobile number (e.g. +61412345678) */
+  mobile?: string | null;
 }
 
 export interface DeleteGuestRequest {
@@ -27,12 +41,30 @@ export interface RegisterGuestRequest {
   pushToken: string;
   /** JSON-serialised Web Push subscription object for browser/PWA push delivery */
   webPushSubscription?: string;
+  accommodationType?: AccommodationType;
+  /** ISO date (YYYY-MM-DD) — used for camping disambiguation only */
+  arrivalDate?: string | null;
+  /** E.164 mobile number — required at the API layer */
+  mobile: string;
+}
+
+/** Staff-side register payload — no pushToken (server generates a placeholder). */
+export interface CreateStaffGuestRequest {
+  name: string;
+  accommodationType: AccommodationType;
+  /** Optional for camping (server auto-assigns CAMP-NNN). Required for room/cabin. */
+  roomNumber?: string;
+  arrivalDate?: string | null;
+  mobile: string;
 }
 
 export interface Guest {
   id: number;
   name: string;
   roomNumber: string;
+  accommodationType?: AccommodationType;
+  arrivalDate?: string | null;
+  mobile?: string | null;
   createdAt: string;
   /** ISO timestamp of the last profile update; equals createdAt if never changed */
   updatedAt: string;
@@ -259,6 +291,8 @@ export interface MaintenanceReport {
   resolvedByStaffId?: number | null;
   resolvedByName?: string | null;
   resolutionNote?: string | null;
+  etaHours?: number | null;
+  etaText?: string | null;
   createdAt: string;
   resolvedAt?: string | null;
 }
@@ -296,6 +330,10 @@ export interface CreateStaffMaintenanceReportRequest {
 
 export interface AcknowledgeMaintenanceReportRequest {
   inProgressNote?: string;
+  /** ETA preset (1, 2, 4, 24, 48). Mutually exclusive with etaText. */
+  etaHours?: number | null;
+  /** Free-text ETA ("Other" option). Used when etaHours is not supplied. */
+  etaText?: string | null;
 }
 
 export type ResolveMaintenanceReportRequestResolution =
@@ -310,6 +348,112 @@ export interface ResolveMaintenanceReportRequest {
   resolution: ResolveMaintenanceReportRequestResolution;
   resolutionNote?: string;
 }
+
+// ─── Housekeeping (mirror of Maintenance, staff-only) ─────────────────────────
+
+export type HousekeepingReportUrgency =
+  (typeof HousekeepingReportUrgency)[keyof typeof HousekeepingReportUrgency];
+
+export const HousekeepingReportUrgency = {
+  urgent: "urgent",
+  non_urgent: "non_urgent",
+} as const;
+
+export type HousekeepingReportStatus =
+  (typeof HousekeepingReportStatus)[keyof typeof HousekeepingReportStatus];
+
+export const HousekeepingReportStatus = {
+  open: "open",
+  in_progress: "in_progress",
+  resolved: "resolved",
+} as const;
+
+export type HousekeepingReportResolution =
+  | (typeof HousekeepingReportResolution)[keyof typeof HousekeepingReportResolution]
+  | null;
+
+export const HousekeepingReportResolution = {
+  actioned: "actioned",
+  delegated: "delegated",
+} as const;
+
+export interface HousekeepingReport {
+  id: number;
+  source?: string;
+  guestName: string;
+  roomNumber: string;
+  openedByName?: string | null;
+  title: string;
+  description: string;
+  urgency: HousekeepingReportUrgency;
+  status: HousekeepingReportStatus;
+  inProgressAt?: string | null;
+  inProgressByName?: string | null;
+  inProgressNote?: string | null;
+  resolution?: HousekeepingReportResolution;
+  resolvedByStaffId?: number | null;
+  resolvedByName?: string | null;
+  resolutionNote?: string | null;
+  etaHours?: number | null;
+  etaText?: string | null;
+  createdAt: string;
+  resolvedAt?: string | null;
+  photos?: string[] | null;
+}
+
+export type CreateStaffHousekeepingReportRequestUrgency =
+  (typeof CreateStaffHousekeepingReportRequestUrgency)[keyof typeof CreateStaffHousekeepingReportRequestUrgency];
+
+export const CreateStaffHousekeepingReportRequestUrgency = {
+  urgent: "urgent",
+  non_urgent: "non_urgent",
+} as const;
+
+export interface CreateStaffHousekeepingReportRequest {
+  roomNumber: string;
+  title: string;
+  description: string;
+  urgency: CreateStaffHousekeepingReportRequestUrgency;
+}
+
+export interface AcknowledgeHousekeepingReportRequest {
+  inProgressNote?: string;
+  /** ETA preset (1, 2, 4, 24, 48). Mutually exclusive with etaText. */
+  etaHours?: number | null;
+  /** Free-text ETA ("Other" option). Used when etaHours is not supplied. */
+  etaText?: string | null;
+}
+
+export type ResolveHousekeepingReportRequestResolution =
+  (typeof ResolveHousekeepingReportRequestResolution)[keyof typeof ResolveHousekeepingReportRequestResolution];
+
+export const ResolveHousekeepingReportRequestResolution = {
+  actioned: "actioned",
+  delegated: "delegated",
+} as const;
+
+export interface ResolveHousekeepingReportRequest {
+  resolution: ResolveHousekeepingReportRequestResolution;
+  resolutionNote?: string;
+}
+
+export type CreateStaffHousekeepingReport201 = {
+  id: number;
+  status: string;
+};
+
+export type GetHousekeepingReportsParams = {
+  status?: GetHousekeepingReportsStatus;
+};
+
+export type GetHousekeepingReportsStatus =
+  (typeof GetHousekeepingReportsStatus)[keyof typeof GetHousekeepingReportsStatus];
+
+export const GetHousekeepingReportsStatus = {
+  open: "open",
+  in_progress: "in_progress",
+  resolved: "resolved",
+} as const;
 
 export interface RevokeSessionsResponse {
   /** ISO timestamp — all tokens issued before this moment are now rejected */

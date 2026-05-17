@@ -10,6 +10,9 @@ import NotFound from "@/pages/not-found";
 import Login from "@/pages/login";
 import Guests from "@/pages/guests";
 import Maintenance from "@/pages/maintenance";
+import Housekeeping from "@/pages/housekeeping";
+import SmsHistory from "@/pages/sms-history";
+import SmsSettings from "@/pages/sms-settings";
 import Notifications from "@/pages/notifications";
 import Staff from "@/pages/staff";
 import ExpensesPage from "@/pages/expenses-page";
@@ -59,6 +62,9 @@ function Router() {
       <Route path="/" component={Guests} />
       <Route path="/guests" component={Guests} />
       <Route path="/maintenance" component={Maintenance} />
+      <Route path="/housekeeping" component={Housekeeping} />
+      <Route path="/sms-history" component={SmsHistory} />
+      <Route path="/sms-settings" component={SmsSettings} />
       <Route path="/notifications" component={Notifications} />
       <Route path="/staff" component={Staff} />
       <Route path="/expenses" component={ExpensesPage} />

@@ -7,6 +7,10 @@ export interface GuestProfile {
   roomNumber: string;
   pushToken: string;
   registeredAt: string;
+  // ── New fields (added with the SMS / accommodation-type feature) ─────────
+  accommodationType?: "room" | "cabin" | "camping_site";
+  arrivalDate?: string | null;
+  mobile?: string | null;
 }
 
 interface GuestContextValue {

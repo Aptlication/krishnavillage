@@ -1,12 +1,18 @@
+import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
-import { Users, Bell, LogOut, HeartPulse, ShieldCheck, Wrench, Receipt, BookOpen } from "lucide-react";
+import {
+  Users, Bell, LogOut, HeartPulse, ShieldCheck, Wrench, Sparkles, Receipt, BookOpen,
+  MessageSquare, Settings as SettingsIcon, Menu, ChevronLeft,
+} from "lucide-react";
 import {
   useHealthCheck,
   useGetGuests,
   getGetGuestsQueryKey,
   useGetMaintenanceReports,
   getGetMaintenanceReportsQueryKey,
+  useGetHousekeepingReports,
+  getGetHousekeepingReportsQueryKey,
   useGetExpensePendingCount,
   getGetExpensePendingCountQueryKey,
   useGetNotifications,
@@ -21,6 +27,25 @@ export function Layout({ children }: { children: React.ReactNode }) {
     logout();
     navigate("/guests");
   };
+
+  // Mobile-only collapsing nav for the Maintenance section. The maintenance
+  // workflow is dense and the stacked sidebar steals most of the viewport on
+  // handheld devices, so we hide the nav on mobile when /maintenance is the
+  // active route. The user can reopen it via a floating button or via the
+  // "Hide menu" control inside the nav. Leaving /maintenance, or crossing the
+  // md breakpoint, restores the nav automatically.
+  const [navHidden, setNavHidden] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return location === "/maintenance" && window.matchMedia("(max-width: 767.98px)").matches;
+  });
+  useEffect(() => {
+    const mql = window.matchMedia("(max-width: 767.98px)");
+    const sync = () => setNavHidden(mql.matches && location === "/maintenance");
+    sync();
+    mql.addEventListener("change", sync);
+    return () => mql.removeEventListener("change", sync);
+  }, [location]);
+
   const { data: health } = useHealthCheck();
   const { data: guests } = useGetGuests(
     {},
@@ -43,6 +68,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
     },
   });
   const openMaintenanceCount = maintenanceReports?.filter(
+    (r) => r.status === "open" || r.status === "in_progress"
+  ).length;
+  const { data: housekeepingReports } = useGetHousekeepingReports(undefined, {
+    query: {
+      queryKey: getGetHousekeepingReportsQueryKey({}),
+      enabled: !!session?.token,
+      refetchInterval: 30_000,
+      refetchOnWindowFocus: true,
+    },
+  });
+  const openHousekeepingCount = housekeepingReports?.filter(
     (r) => r.status === "open" || r.status === "in_progress"
   ).length;
   const { data: expensePending } = useGetExpensePendingCount({
@@ -72,7 +108,22 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background flex flex-col md:flex-row">
-      <aside className="w-full md:w-64 bg-card border-r border-border shrink-0 flex flex-col">
+      {/* Floating reopen button — only rendered when nav is collapsed on mobile */}
+      {navHidden && (
+        <button
+          type="button"
+          onClick={() => setNavHidden(false)}
+          aria-label="Open navigation"
+          data-testid="button-open-nav"
+          className="md:hidden fixed top-3 left-3 z-50 h-11 w-11 rounded-full bg-card border border-border shadow-md flex items-center justify-center text-foreground hover:bg-accent transition-colors"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+      )}
+      <aside
+        data-testid="sidebar"
+        className={`w-full md:w-64 bg-card border-r border-border shrink-0 ${navHidden ? "hidden md:flex" : "flex"} flex-col`}
+      >
         <div className="p-6">
           <div className="flex items-center gap-3 mb-0.5">
             <img src={`${import.meta.env.BASE_URL}kv-icon.png`} alt="KV" className="w-9 h-9 rounded-lg object-contain" />
@@ -127,6 +178,24 @@ export function Layout({ children }: { children: React.ReactNode }) {
               )}
             </div>
           </Link>
+          <Link href="/housekeeping">
+            <div
+              data-testid="nav-housekeeping"
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${
+                location === "/housekeeping"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+            >
+              <Sparkles className="w-4 h-4" />
+              Housekeeping
+              {openHousekeepingCount !== undefined && openHousekeepingCount > 0 && (
+                <span className="ml-auto text-xs font-semibold bg-primary/15 text-primary rounded-full px-2 py-0.5 min-w-[1.5rem] text-center">
+                  {openHousekeepingCount}
+                </span>
+              )}
+            </div>
+          </Link>
           <Link href="/notifications">
             <div
               data-testid="nav-notifications"
@@ -176,6 +245,32 @@ export function Layout({ children }: { children: React.ReactNode }) {
               )}
             </div>
           </Link>
+          <Link href="/sms-history">
+            <div
+              data-testid="nav-sms-history"
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${
+                location === "/sms-history"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              SMS History
+            </div>
+          </Link>
+          <Link href="/sms-settings">
+            <div
+              data-testid="nav-sms-settings"
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${
+                location === "/sms-settings"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+            >
+              <SettingsIcon className="w-4 h-4" />
+              SMS Settings
+            </div>
+          </Link>
           <Link href="/services">
             <div
               data-testid="nav-services"
@@ -192,6 +287,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="p-4 border-t border-border mt-auto">
+          {/* Mobile-only "Hide menu" — collapses the nav so the user gets the
+              full viewport for the maintenance content */}
+          <button
+            type="button"
+            onClick={() => setNavHidden(true)}
+            data-testid="button-hide-nav"
+            className="md:hidden flex items-center gap-3 px-3 py-2.5 w-full rounded-md text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors text-left mb-2"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            Hide menu
+          </button>
           {session && (
             <div className="px-3 py-2 mb-1 text-xs text-muted-foreground truncate">
               Signed in as <span className="font-medium text-foreground">{session.displayName}</span>
@@ -213,7 +319,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </aside>
 
       <main className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
-        <div className="flex-1 overflow-auto p-4 md:p-8">
+        <div
+          className={`flex-1 overflow-auto md:p-8 ${navHidden ? "px-4 pt-16 pb-4" : "p-4"}`}
+        >
           <div className="max-w-5xl mx-auto h-full">
             {children}
           </div>

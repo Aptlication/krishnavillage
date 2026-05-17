@@ -1,10 +1,9 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { maintenanceReportsTable, insertMaintenanceReportSchema } from "@workspace/db/schema";
+import { housekeepingReportsTable } from "@workspace/db/schema";
 import { and, desc, eq, gte, lte } from "drizzle-orm";
-import { requireStaffAuth, resolveTenant } from "../middlewares/staffAuth";
+import { requireStaffAuth } from "../middlewares/staffAuth";
 import type { TenantRequest, StaffRequest } from "../middlewares/staffAuth";
-import { sendStaffMaintenanceAlert } from "../lib/staffPush";
 import { dispatchAutoSms } from "./smsRoute";
 import {
   renderAcknowledgeTemplate,
@@ -16,76 +15,22 @@ import {
 
 const VALID_ETA_HOURS = [1, 2, 4, 24, 48] as const;
 
-const maintenanceRouter = Router();
+/**
+ * Pull the "[Acknowledged by: Name]" / "[Signed: Name]" tag off the note the
+ * client prepends. Returns null if no tag is present. Mirrors the helper in
+ * maintenanceRoute so behaviour stays identical between the two pipelines.
+ */
+function extractStaffSignature(note: string | null | undefined): string | null {
+  if (!note) return null;
+  const m = /\[(?:Acknowledged by|Signed):\s*([^\]]+)\]/.exec(note);
+  return m && m[1] ? m[1].trim() : null;
+}
 
-// ─── Guest submit ─────────────────────────────────────────────────────────────
-maintenanceRouter.post("/maintenance", resolveTenant, async (req, res) => {
-  const parsed = insertMaintenanceReportSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request body", details: parsed.error.issues });
-    return;
-  }
-
-  const tenantId = (req as unknown as TenantRequest).tenantId;
-  const { guestName, roomNumber, title, description, urgency, photos } = parsed.data;
-
-  if (urgency !== "urgent" && urgency !== "non_urgent") {
-    res.status(400).json({ error: "urgency must be 'urgent' or 'non_urgent'" });
-    return;
-  }
-
-  const photoArray: string[] | null = photos ?? null;
-  if (photoArray !== null && (!Array.isArray(photoArray) || photoArray.length > 3)) {
-    res.status(400).json({ error: "photos must be an array of up to 3 base64 data URIs" });
-    return;
-  }
-
-  const [report] = await db
-    .insert(maintenanceReportsTable)
-    .values({ source: "guest", guestName, roomNumber, title, description, urgency, photos: photoArray, tenantId })
-    .returning();
-
-  if (urgency === "urgent") {
-    sendStaffMaintenanceAlert(tenantId, roomNumber, title).catch(() => {});
-  }
-
-  res.status(201).json({ id: report.id, status: report.status });
-});
-
-// ─── Guest: view my reports by room number ────────────────────────────────────
-maintenanceRouter.get("/maintenance/my-reports", resolveTenant, async (req, res) => {
-  const tenantId = (req as unknown as TenantRequest).tenantId;
-  const { roomNumber } = req.query as { roomNumber?: string };
-
-  if (!roomNumber || typeof roomNumber !== "string" || !roomNumber.trim()) {
-    res.status(400).json({ error: "roomNumber is required" });
-    return;
-  }
-
-  const reports = await db
-    .select({
-      id: maintenanceReportsTable.id,
-      title: maintenanceReportsTable.title,
-      description: maintenanceReportsTable.description,
-      urgency: maintenanceReportsTable.urgency,
-      status: maintenanceReportsTable.status,
-      resolutionNote: maintenanceReportsTable.resolutionNote,
-      createdAt: maintenanceReportsTable.createdAt,
-      resolvedAt: maintenanceReportsTable.resolvedAt,
-    })
-    .from(maintenanceReportsTable)
-    .where(and(
-      eq(maintenanceReportsTable.tenantId, tenantId),
-      eq(maintenanceReportsTable.roomNumber, roomNumber.trim().toUpperCase()),
-    ))
-    .orderBy(desc(maintenanceReportsTable.createdAt))
-    .limit(20);
-
-  res.json(reports);
-});
+const housekeepingRouter = Router();
 
 // ─── Staff create ─────────────────────────────────────────────────────────────
-maintenanceRouter.post("/maintenance/staff", requireStaffAuth, async (req, res) => {
+// Housekeeping requests are staff-only; there is no guest-side submit endpoint.
+housekeepingRouter.post("/housekeeping/staff", requireStaffAuth, async (req, res) => {
   const staff = (req as unknown as StaffRequest).staff;
   const tenantId = (req as unknown as TenantRequest).tenantId;
 
@@ -114,18 +59,17 @@ maintenanceRouter.post("/maintenance/staff", requireStaffAuth, async (req, res) 
     return;
   }
 
-  // Optional photo array (base64 data URIs, same format as guest-side reports)
   let photoArray: string[] | null = null;
   if (photos !== undefined && photos !== null) {
     if (!Array.isArray(photos) || !photos.every((p) => typeof p === "string")) {
       res.status(400).json({ error: "photos must be an array of strings" });
       return;
     }
-    photoArray = (photos as string[]).slice(0, 5); // hard cap defence
+    photoArray = (photos as string[]).slice(0, 5);
   }
 
   const [report] = await db
-    .insert(maintenanceReportsTable)
+    .insert(housekeepingReportsTable)
     .values({
       source: "staff",
       guestName: staff.displayName,
@@ -140,15 +84,11 @@ maintenanceRouter.post("/maintenance/staff", requireStaffAuth, async (req, res) 
     })
     .returning();
 
-  if (urgency === "urgent") {
-    sendStaffMaintenanceAlert(tenantId, roomNumber as string, (title as string).trim()).catch(() => {});
-  }
-
   res.status(201).json({ id: report.id, status: report.status });
 });
 
 // ─── List ─────────────────────────────────────────────────────────────────────
-maintenanceRouter.get("/maintenance", requireStaffAuth, async (req, res) => {
+housekeepingRouter.get("/housekeeping", requireStaffAuth, async (req, res) => {
   const tenantId = (req as unknown as TenantRequest).tenantId;
   const { status, resolution, from } = req.query as {
     status?: string;
@@ -159,68 +99,67 @@ maintenanceRouter.get("/maintenance", requireStaffAuth, async (req, res) => {
   const validStatuses = ["open", "in_progress", "resolved"];
   const validResolutions = ["actioned", "delegated"];
 
-  const conditions = [eq(maintenanceReportsTable.tenantId, tenantId)];
+  const conditions = [eq(housekeepingReportsTable.tenantId, tenantId)];
 
   if (status && validStatuses.includes(status)) {
-    conditions.push(eq(maintenanceReportsTable.status, status));
+    conditions.push(eq(housekeepingReportsTable.status, status));
   }
   if (resolution && validResolutions.includes(resolution)) {
-    conditions.push(eq(maintenanceReportsTable.resolution, resolution));
+    conditions.push(eq(housekeepingReportsTable.resolution, resolution));
   }
   if (from) {
     const fromDate = new Date(from);
     if (!isNaN(fromDate.getTime())) {
-      conditions.push(gte(maintenanceReportsTable.resolvedAt, fromDate));
+      conditions.push(gte(housekeepingReportsTable.resolvedAt, fromDate));
     }
   }
 
   const reports = await db
     .select()
-    .from(maintenanceReportsTable)
+    .from(housekeepingReportsTable)
     .where(and(...conditions))
-    .orderBy(desc(maintenanceReportsTable.createdAt));
+    .orderBy(desc(housekeepingReportsTable.createdAt));
 
   res.json(reports);
 });
 
 // ─── CSV Export (resolved) ────────────────────────────────────────────────────
-maintenanceRouter.get("/maintenance/export", requireStaffAuth, async (req, res) => {
+housekeepingRouter.get("/housekeeping/export", requireStaffAuth, async (req, res) => {
   const tenantId = (req as unknown as TenantRequest).tenantId;
   const { resolution, from, to } = req.query as { resolution?: string; from?: string; to?: string };
 
   const validResolutions = ["actioned", "delegated"];
   const conditions = [
-    eq(maintenanceReportsTable.tenantId, tenantId),
-    eq(maintenanceReportsTable.status, "resolved"),
+    eq(housekeepingReportsTable.tenantId, tenantId),
+    eq(housekeepingReportsTable.status, "resolved"),
   ];
 
   if (resolution && validResolutions.includes(resolution)) {
-    conditions.push(eq(maintenanceReportsTable.resolution, resolution));
+    conditions.push(eq(housekeepingReportsTable.resolution, resolution));
   }
   let fromDate: Date | undefined;
   if (from) {
     const d = new Date(from);
     if (!isNaN(d.getTime())) {
       fromDate = d;
-      conditions.push(gte(maintenanceReportsTable.resolvedAt, d));
+      conditions.push(gte(housekeepingReportsTable.resolvedAt, d));
     }
   }
   let toDate: Date | undefined;
   if (to) {
     const d = new Date(to);
     if (!isNaN(d.getTime())) {
-      // Include the full end day
       d.setHours(23, 59, 59, 999);
       toDate = d;
-      conditions.push(lte(maintenanceReportsTable.resolvedAt, d));
+      conditions.push(lte(housekeepingReportsTable.resolvedAt, d));
     }
   }
 
   const reports = await db
     .select()
-    .from(maintenanceReportsTable)
+    .from(housekeepingReportsTable)
     .where(and(...conditions))
-    .orderBy(desc(maintenanceReportsTable.resolvedAt));
+    .orderBy(desc(housekeepingReportsTable.resolvedAt));
 
   const FORMULA_PREFIXES = /^[=+\-@\t\r]/;
 
@@ -250,7 +189,6 @@ maintenanceRouter.get("/maintenance/export", requireStaffAuth, async (req, res) 
 
   const csv = [header, ...rows].join("\r\n");
 
-  // Build a descriptive filename based on filters
   let filenameSuffix = "";
   if (fromDate && toDate) {
     const f = fromDate.toISOString().slice(0, 10);
@@ -266,14 +204,14 @@ maintenanceRouter.get("/maintenance/export", requireStaffAuth, async (req, res) 
   if (resolution && validResolutions.includes(resolution)) {
     filenameSuffix += `-${resolution}`;
   }
-  const filename = `maintenance-history${filenameSuffix}.csv`;
+  const filename = `housekeeping-history${filenameSuffix}.csv`;
   res.setHeader("Content-Type", "text/csv");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
   res.send(csv);
 });
 
 // ─── Acknowledge → In Progress ────────────────────────────────────────────────
-maintenanceRouter.patch("/maintenance/:id/acknowledge", requireStaffAuth, async (req, res) => {
+housekeepingRouter.patch("/housekeeping/:id/acknowledge", requireStaffAuth, async (req, res) => {
   const id = parseInt(req.params["id"] as string, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
@@ -287,17 +225,16 @@ maintenanceRouter.patch("/maintenance/:id/acknowledge", requireStaffAuth, async 
 
   const [existing] = await db
     .select()
-    .from(maintenanceReportsTable)
-    .where(and(eq(maintenanceReportsTable.tenantId, tenantId), eq(maintenanceReportsTable.id, id)));
+    .from(housekeepingReportsTable)
+    .where(and(eq(housekeepingReportsTable.tenantId, tenantId), eq(housekeepingReportsTable.id, id)));
 
   if (!existing) { res.status(404).json({ error: "Report not found" }); return; }
   if (existing.status !== "open") { res.status(409).json({ error: "Report is not in 'open' status" }); return; }
 
   const note = typeof inProgressNote === "string" && inProgressNote.trim() ? inProgressNote.trim() : null;
 
-  // ETA: either a preset hour value (1/2/4/24/48) or free-text from "Other".
-  // Exactly one is stored; the other is forced to null so display logic stays
-  // unambiguous later.
+  // ETA: preset hour value (1/2/4/24/48) or free-text from "Other". Mirrors
+  // the validation in maintenanceRoute so behaviour is identical.
   const presetEtaHours =
     typeof etaHours === "number" && (VALID_ETA_HOURS as readonly number[]).includes(etaHours)
       ? etaHours
@@ -306,7 +243,7 @@ maintenanceRouter.patch("/maintenance/:id/acknowledge", requireStaffAuth, async 
     !presetEtaHours && typeof etaText === "string" && etaText.trim() ? etaText.trim() : null;
 
   const [updated] = await db
-    .update(maintenanceReportsTable)
+    .update(housekeepingReportsTable)
     .set({
       status: "in_progress",
       inProgressAt: new Date(),
@@ -316,17 +253,14 @@ maintenanceRouter.patch("/maintenance/:id/acknowledge", requireStaffAuth, async 
       etaHours: presetEtaHours,
       etaText: otherEtaText,
     })
-    .where(and(eq(maintenanceReportsTable.tenantId, tenantId), eq(maintenanceReportsTable.id, id)))
+    .where(and(eq(housekeepingReportsTable.tenantId, tenantId), eq(housekeepingReportsTable.id, id)))
     .returning();
 
-  // Auto-send acknowledgement SMS — fire-and-forget so a slow Twilio call
-  // never blocks the staff response. Extract the "Acknowledged by: Name"
-  // staff label from the inProgressNote that was just persisted; this is the
-  // same name that appears in the audit trail.
+  // Auto-send acknowledgement SMS — fire-and-forget.
   const ackStaffName = extractStaffSignature(updated.inProgressNote) ?? staff.displayName;
   const ackBody = renderAcknowledgeTemplate({
     firstName: deriveFirstName(updated.guestName),
-    kind: "maintenance",
+    kind: "housekeeping",
     roomLabel: formatRoomLabel(updated.roomNumber, null),
     staffName: ackStaffName,
     etaPhrase: formatEtaPhrase(updated.etaHours, updated.etaText),
@@ -336,24 +270,14 @@ maintenanceRouter.patch("/maintenance/:id/acknowledge", requireStaffAuth, async 
     roomNumber: updated.roomNumber,
     body: ackBody,
     trigger: "auto_acknowledge",
-    linkedMaintenanceReportId: updated.id,
+    linkedHousekeepingReportId: updated.id,
   });
 
   res.json(updated);
 });
 
-/**
- * Pull the "[Acknowledged by: Name]" / "[Signed: Name]" tag off the note the
- * client prepends. Returns null if no tag is present.
- */
-function extractStaffSignature(note: string | null | undefined): string | null {
-  if (!note) return null;
-  const m = /\[(?:Acknowledged by|Signed):\s*([^\]]+)\]/.exec(note);
-  return m && m[1] ? m[1].trim() : null;
-}
-
 // ─── Resolve & Sign Off ───────────────────────────────────────────────────────
-maintenanceRouter.patch("/maintenance/:id/resolve", requireStaffAuth, async (req, res) => {
+housekeepingRouter.patch("/housekeeping/:id/resolve", requireStaffAuth, async (req, res) => {
   const id = parseInt(req.params["id"] as string, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
@@ -368,8 +292,8 @@ maintenanceRouter.patch("/maintenance/:id/resolve", requireStaffAuth, async (req
 
   const [existing] = await db
     .select()
-    .from(maintenanceReportsTable)
-    .where(and(eq(maintenanceReportsTable.tenantId, tenantId), eq(maintenanceReportsTable.id, id)));
+    .from(housekeepingReportsTable)
+    .where(and(eq(housekeepingReportsTable.tenantId, tenantId), eq(housekeepingReportsTable.id, id)));
 
   if (!existing) { res.status(404).json({ error: "Report not found" }); return; }
   if (existing.status === "resolved") { res.status(409).json({ error: "Report is already resolved" }); return; }
@@ -377,7 +301,7 @@ maintenanceRouter.patch("/maintenance/:id/resolve", requireStaffAuth, async (req
   const note = typeof resolutionNote === "string" && resolutionNote.trim() ? resolutionNote.trim() : null;
 
   const [updated] = await db
-    .update(maintenanceReportsTable)
+    .update(housekeepingReportsTable)
     .set({
       status: "resolved",
       resolution,
@@ -386,14 +310,14 @@ maintenanceRouter.patch("/maintenance/:id/resolve", requireStaffAuth, async (req
       resolvedByName: staff.displayName,
       resolutionNote: note,
     })
-    .where(and(eq(maintenanceReportsTable.tenantId, tenantId), eq(maintenanceReportsTable.id, id)))
+    .where(and(eq(housekeepingReportsTable.tenantId, tenantId), eq(housekeepingReportsTable.id, id)))
     .returning();
 
   // Auto-send sign-off SMS — fire-and-forget.
   const signOffStaffName = extractStaffSignature(updated.resolutionNote) ?? staff.displayName;
   const resolveBody = renderResolveTemplate({
     firstName: deriveFirstName(updated.guestName),
-    kind: "maintenance",
+    kind: "housekeeping",
     roomLabel: formatRoomLabel(updated.roomNumber, null),
     staffName: signOffStaffName,
   });
@@ -402,14 +326,14 @@ maintenanceRouter.patch("/maintenance/:id/resolve", requireStaffAuth, async (req
     roomNumber: updated.roomNumber,
     body: resolveBody,
     trigger: "auto_resolve",
-    linkedMaintenanceReportId: updated.id,
+    linkedHousekeepingReportId: updated.id,
   });
 
   res.json(updated);
 });
 
 // ─── Update resolution note ───────────────────────────────────────────────────
-maintenanceRouter.patch("/maintenance/:id/note", requireStaffAuth, async (req, res) => {
+housekeepingRouter.patch("/housekeeping/:id/note", requireStaffAuth, async (req, res) => {
   const id = parseInt(req.params["id"] as string, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
@@ -419,8 +343,8 @@ maintenanceRouter.patch("/maintenance/:id/note", requireStaffAuth, async (req, r
 
   const [existing] = await db
     .select()
-    .from(maintenanceReportsTable)
-    .where(and(eq(maintenanceReportsTable.tenantId, tenantId), eq(maintenanceReportsTable.id, id)));
+    .from(housekeepingReportsTable)
+    .where(and(eq(housekeepingReportsTable.tenantId, tenantId), eq(housekeepingReportsTable.id, id)));
 
   if (!existing) { res.status(404).json({ error: "Report not found" }); return; }
   if (existing.status !== "resolved") { res.status(409).json({ error: "Report is not resolved" }); return; }
@@ -433,25 +357,26 @@ maintenanceRouter.patch("/maintenance/:id/note", requireStaffAuth, async (req, r
         : null;
 
   const [updated] = await db
-    .update(maintenanceReportsTable)
+    .update(housekeepingReportsTable)
     .set({
       resolutionNote: note,
       resolutionNoteEditedByName: staff.displayName,
       resolutionNoteEditedAt: new Date(),
     })
-    .where(and(eq(maintenanceReportsTable.tenantId, tenantId), eq(maintenanceReportsTable.id, id)))
+    .where(and(eq(housekeepingReportsTable.tenantId, tenantId), eq(housekeepingReportsTable.id, id)))
     .returning();
 
   res.json(updated);
 });
 
 // ─── Escalate urgency ─────────────────────────────────────────────────────────
-maintenanceRouter.patch("/maintenance/:id/urgency", requireStaffAuth, async (req, res) => {
+housekeepingRouter.patch("/housekeeping/:id/urgency", requireStaffAuth, async (req, res) => {
   const id = parseInt(req.params["id"] as string, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
   const tenantId = (req as unknown as TenantRequest).tenantId;
   const { urgency } = req.body as { urgency?: unknown };
+
   if (urgency !== "urgent" && urgency !== "non_urgent") {
     res.status(400).json({ error: "urgency must be 'urgent' or 'non_urgent'" });
     return;
@@ -459,22 +384,18 @@ maintenanceRouter.patch("/maintenance/:id/urgency", requireStaffAuth, async (req
 
   const [existing] = await db
     .select()
-    .from(maintenanceReportsTable)
-    .where(and(eq(maintenanceReportsTable.tenantId, tenantId), eq(maintenanceReportsTable.id, id)));
+    .from(housekeepingReportsTable)
+    .where(and(eq(housekeepingReportsTable.tenantId, tenantId), eq(housekeepingReportsTable.id, id)));
 
   if (!existing) { res.status(404).json({ error: "Report not found" }); return; }
 
   const [updated] = await db
-    .update(maintenanceReportsTable)
+    .update(housekeepingReportsTable)
     .set({ urgency: urgency as string })
-    .where(and(eq(maintenanceReportsTable.tenantId, tenantId), eq(maintenanceReportsTable.id, id)))
+    .where(and(eq(housekeepingReportsTable.tenantId, tenantId), eq(housekeepingReportsTable.id, id)))
     .returning();
-
-  if (existing.urgency !== "urgent" && urgency === "urgent") {
-    sendStaffMaintenanceAlert(tenantId, existing.roomNumber, existing.title).catch(() => {});
-  }
 
   res.json(updated);
 });
 
-export default maintenanceRouter;
+export default housekeepingRouter;
