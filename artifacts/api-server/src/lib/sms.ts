@@ -275,37 +275,3 @@ export function composeFinalBody(body: string, footer: string): string {
   if (!trimmedFooter) return trimmed;
   return `${trimmed}\n\n${trimmedFooter}`;
 }
- for both.
- */
-export function deriveFirstName(fullName: string): string {
-  const parts = fullName.trim().split(/\s+/);
-  return parts[0] ?? fullName.trim();
-}
-
-/**
- * Friendly room label that matches what guests see on their booking:
- *   roomNumber starts with CAMP- -> "campsite CAMP-001"
- *   accommodationType === "cabin" -> "Cabin 4"
- *   default -> "Room 12"
- */
-export function formatRoomLabel(roomNumber: string, accommodationType: string | null | undefined): string {
-  const num = (roomNumber ?? "").trim();
-  if (accommodationType === "camping_site" || num.toUpperCase().startsWith("CAMP-")) {
-    return `campsite ${num}`;
-  }
-  if (accommodationType === "cabin") return `Cabin ${num}`;
-  return `Room ${num}`;
-}
-
-/**
- * Compose the final outbound body: template + blank line + tenant footer.
- * Centralised here so manual and auto sends are guaranteed consistent.
- */
-export function composeFinalBody(body: string, footer: string): string {
-  const trimmed = body.trimEnd();
-  const trimmedFooter = footer.trim();
-  if (!trimmedFooter) return trimmed;
-  return `${trimmed}\n\n${trimmedFooter}`;
-}
-
-}
