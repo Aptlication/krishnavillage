@@ -53,6 +53,8 @@ import type {
   ReorderFaqsRequest,
   ResolveMaintenanceReportRequest,
   HousekeepingReport,
+  CreateHousekeepingReportRequest,
+  CreateHousekeepingReport201,
   CreateStaffHousekeepingReport201,
   CreateStaffHousekeepingReportRequest,
   AcknowledgeHousekeepingReportRequest,
@@ -1386,6 +1388,74 @@ export const useCreateStaffHousekeepingReport = <
 > => {
   return useMutation(getCreateStaffHousekeepingReportMutationOptions(options));
 };
+
+// ─── Guest: Create housekeeping request (mobile PWA) ──────────────────────────
+export const getCreateHousekeepingReportUrl = () => `/api/housekeeping`;
+
+export const createHousekeepingReport = async (
+  data: CreateHousekeepingReportRequest,
+  options?: RequestInit,
+): Promise<CreateHousekeepingReport201> => {
+  return customFetch<CreateHousekeepingReport201>(getCreateHousekeepingReportUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(data),
+  });
+};
+
+export const getCreateHousekeepingReportMutationOptions = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createHousekeepingReport>>,
+    TError,
+    { data: BodyType<CreateHousekeepingReportRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createHousekeepingReport>>,
+  TError,
+  { data: BodyType<CreateHousekeepingReportRequest> },
+  TContext
+> => {
+  const mutationKey = ["createHousekeepingReport"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation && "mutationKey" in options.mutation && options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createHousekeepingReport>>,
+    { data: BodyType<CreateHousekeepingReportRequest> }
+  > = (props) => createHousekeepingReport(props.data, requestOptions);
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export const useCreateHousekeepingReport = <
+  TError = ErrorType<ErrorResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createHousekeepingReport>>,
+    TError,
+    { data: BodyType<CreateHousekeepingReportRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createHousekeepingReport>>,
+  TError,
+  { data: BodyType<CreateHousekeepingReportRequest> },
+  TContext
+> => {
+  return useMutation(getCreateHousekeepingReportMutationOptions(options));
+};
+
 
 /**
  * @summary Acknowledge a housekeeping report (staff only)

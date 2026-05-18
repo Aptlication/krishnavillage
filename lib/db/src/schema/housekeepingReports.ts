@@ -15,6 +15,16 @@ export const housekeepingReportsTable = pgTable("housekeeping_reports", {
   description: text("description").notNull(),
   urgency: text("urgency").notNull(), // "urgent" | "non_urgent"
   photos: json("photos").$type<string[]>(),
+  // ─── Guest attribution (added with the SMS feature) ───────────────────────
+  // guestId is set when staff pick an existing guest from the search picker
+  // (FK to guest_registrations.id) OR when the report is raised by the guest
+  // themselves from the PWA. guestSurname / guestMobile capture the values
+  // either pulled from the guest's record or typed manually by staff. The
+  // auto-SMS dispatcher prefers report-attached values over a room-number
+  // lookup so cabin/site/location-type rooms still notify correctly.
+  guestId: integer("guest_id"),
+  guestSurname: text("guest_surname"),
+  guestMobile: text("guest_mobile"),
   // Lifecycle: open -> in_progress -> resolved
   status: text("status").notNull().default("open"), // "open" | "in_progress" | "resolved"
   createdAt: timestamp("created_at").notNull().defaultNow(),

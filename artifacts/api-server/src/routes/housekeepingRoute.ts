@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { housekeepingReportsTable } from "@workspace/db/schema";
+import { housekeepingReportsTable, guestRegistrationsTable } from "@workspace/db/schema";
 import { and, desc, eq, gte, lte } from "drizzle-orm";
-import { requireStaffAuth } from "../middlewares/staffAuth";
+import { requireStaffAuth, resolveTenant } from "../middlewares/staffAuth";
 import type { TenantRequest, StaffRequest } from "../middlewares/staffAuth";
 import { dispatchAutoSms } from "./smsRoute";
 import {
+  normalisePhoneNumber,
   renderAcknowledgeTemplate,
   renderResolveTemplate,
   deriveFirstName,
@@ -34,12 +35,15 @@ housekeepingRouter.post("/housekeeping/staff", requireStaffAuth, async (req, res
   const staff = (req as unknown as StaffRequest).staff;
   const tenantId = (req as unknown as TenantRequest).tenantId;
 
-  const { roomNumber, title, description, urgency, photos } = req.body as {
+  const { roomNumber, title, description, urgency, photos, guestId, guestSurname, guestMobile } = req.body as {
     roomNumber?: unknown;
     title?: unknown;
     description?: unknown;
     urgency?: unknown;
     photos?: unknown;
+    guestId?: unknown;
+    guestSurname?: unknown;
+    guestMobile?: unknown;
   };
 
   if (!title || typeof title !== "string" || !title.trim()) {
@@ -81,6 +85,117 @@ housekeepingRouter.post("/housekeeping/staff", requireStaffAuth, async (req, res
       openedByStaffId: staff.staffId,
       openedByName: staff.displayName,
       tenantId,
+      // Optional guest attribution captured by the staff Register-Guest picker
+      // in the create dialog, or skipped entirely for unattributed jobs.
+      guestId: typeof guestId === "number" && Number.isFinite(guestId) ? guestId : null,
+      guestSurname: typeof guestSurname === "string" && guestSurname.trim() ? guestSurname.trim() : null,
+      guestMobile: typeof guestMobile === "string" && guestMobile.trim()
+        ? (normalisePhoneNumber(guestMobile) ?? null)
+        : null,
+    })
+    .returning();
+
+  res.status(201).json({ id: report.id, status: report.status });
+});
+
+// ─── Guest submit ─────────────────────────────────────────────────────────────
+// Mirrors POST /maintenance — guests can raise housekeeping requests from the
+// mobile PWA, with mandatory surname + mobile so auto-SMS can always reach them.
+housekeepingRouter.post("/housekeeping", resolveTenant, async (req, res) => {
+  const tenantId = (req as unknown as TenantRequest).tenantId;
+  const {
+    guestName,
+    roomNumber,
+    title,
+    description,
+    urgency,
+    photos,
+    guestSurname: rawGuestSurname,
+    guestMobile: rawGuestMobile,
+  } = req.body as {
+    guestName?: unknown;
+    roomNumber?: unknown;
+    title?: unknown;
+    description?: unknown;
+    urgency?: unknown;
+    photos?: unknown;
+    guestSurname?: unknown;
+    guestMobile?: unknown;
+  };
+
+  if (!guestName || typeof guestName !== "string" || !guestName.trim()) {
+    res.status(400).json({ error: "guestName is required" });
+    return;
+  }
+  if (!roomNumber || typeof roomNumber !== "string" || !roomNumber.trim()) {
+    res.status(400).json({ error: "roomNumber is required" });
+    return;
+  }
+  if (!title || typeof title !== "string" || !title.trim()) {
+    res.status(400).json({ error: "title is required" });
+    return;
+  }
+  if (!description || typeof description !== "string" || !description.trim()) {
+    res.status(400).json({ error: "description is required" });
+    return;
+  }
+  if (urgency !== "urgent" && urgency !== "non_urgent") {
+    res.status(400).json({ error: "urgency must be 'urgent' or 'non_urgent'" });
+    return;
+  }
+
+  const guestSurname = typeof rawGuestSurname === "string" ? rawGuestSurname.trim() : "";
+  const normalisedMobile = normalisePhoneNumber(typeof rawGuestMobile === "string" ? rawGuestMobile : null);
+  if (!guestSurname) {
+    res.status(400).json({
+      code: "guest_surname_required",
+      error: "Your surname is required so housekeeping can attribute and respond to this request.",
+    });
+    return;
+  }
+  if (!normalisedMobile) {
+    res.status(400).json({
+      code: "mobile_required",
+      error: "A valid mobile number is required so we can SMS you status updates.",
+    });
+    return;
+  }
+
+  let photoArray: string[] | null = null;
+  if (photos !== undefined && photos !== null) {
+    if (!Array.isArray(photos) || !photos.every((p) => typeof p === "string")) {
+      res.status(400).json({ error: "photos must be an array of strings" });
+      return;
+    }
+    photoArray = (photos as string[]).slice(0, 5);
+  }
+
+  // Best-effort link to the existing guest registration via roomNumber.
+  const matches = await db
+    .select({ id: guestRegistrationsTable.id })
+    .from(guestRegistrationsTable)
+    .where(
+      and(
+        eq(guestRegistrationsTable.tenantId, tenantId),
+        eq(guestRegistrationsTable.roomNumber, roomNumber.trim().toUpperCase()),
+      ),
+    );
+  const linkedGuestId = matches[0]?.id ?? null;
+
+  const [report] = await db
+    .insert(housekeepingReportsTable)
+    .values({
+      source: "guest",
+      guestName: guestName.trim(),
+      roomNumber: roomNumber.trim().toUpperCase(),
+      title: title.trim(),
+      description: description.trim(),
+      urgency,
+      photos: photoArray,
+      tenantId,
+      guestId: linkedGuestId,
+      guestSurname,
+      guestMobile: normalisedMobile,
     })
     .returning();
 
@@ -271,6 +386,8 @@ housekeepingRouter.patch("/housekeeping/:id/acknowledge", requireStaffAuth, asyn
     body: ackBody,
     trigger: "auto_acknowledge",
     linkedHousekeepingReportId: updated.id,
+    reportGuestId: updated.guestId,
+    reportGuestMobile: updated.guestMobile,
   });
 
   res.json(updated);
@@ -327,6 +444,8 @@ housekeepingRouter.patch("/housekeeping/:id/resolve", requireStaffAuth, async (r
     body: resolveBody,
     trigger: "auto_resolve",
     linkedHousekeepingReportId: updated.id,
+    reportGuestId: updated.guestId,
+    reportGuestMobile: updated.guestMobile,
   });
 
   res.json(updated);

@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { maintenanceReportsTable, insertMaintenanceReportSchema } from "@workspace/db/schema";
+import { maintenanceReportsTable, insertMaintenanceReportSchema, guestRegistrationsTable } from "@workspace/db/schema";
 import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { requireStaffAuth, resolveTenant } from "../middlewares/staffAuth";
 import type { TenantRequest, StaffRequest } from "../middlewares/staffAuth";
 import { sendStaffMaintenanceAlert } from "../lib/staffPush";
 import { dispatchAutoSms } from "./smsRoute";
 import {
+  normalisePhoneNumber,
   renderAcknowledgeTemplate,
   renderResolveTemplate,
   deriveFirstName,
@@ -34,6 +35,45 @@ maintenanceRouter.post("/maintenance", resolveTenant, async (req, res) => {
     return;
   }
 
+  // ── Mandatory guest attribution on the guest-submit path ────────────────
+  // Reception relies on these fields to send the auto-SMS, so we hard-reject
+  // missing/invalid input here rather than silently dropping the SMS later.
+  const { guestMobile: rawGuestMobile, guestSurname: rawGuestSurname } = req.body as {
+    guestMobile?: unknown;
+    guestSurname?: unknown;
+  };
+  const guestSurname = typeof rawGuestSurname === "string" ? rawGuestSurname.trim() : "";
+  const normalisedMobile = normalisePhoneNumber(typeof rawGuestMobile === "string" ? rawGuestMobile : null);
+  if (!guestSurname) {
+    res.status(400).json({
+      code: "guest_surname_required",
+      error: "Your surname is required so reception can attribute and respond to this request.",
+    });
+    return;
+  }
+  if (!normalisedMobile) {
+    res.status(400).json({
+      code: "mobile_required",
+      error: "A valid mobile number is required so we can SMS you status updates.",
+    });
+    return;
+  }
+
+  // Best-effort link to the existing guest registration. Looking up by
+  // surname + roomNumber is unique enough in practice (guest_registrations
+  // already rejects duplicate surnames in the same room).
+  const matches = await db
+    .select({ id: guestRegistrationsTable.id })
+    .from(guestRegistrationsTable)
+    .where(
+      and(
+        eq(guestRegistrationsTable.tenantId, tenantId),
+        eq(guestRegistrationsTable.roomNumber, roomNumber),
+      ),
+    );
+  const linkedGuestId =
+    matches.find((g) => true)?.id ?? null;
+
   const photoArray: string[] | null = photos ?? null;
   if (photoArray !== null && (!Array.isArray(photoArray) || photoArray.length > 3)) {
     res.status(400).json({ error: "photos must be an array of up to 3 base64 data URIs" });
@@ -42,7 +82,19 @@ maintenanceRouter.post("/maintenance", resolveTenant, async (req, res) => {
 
   const [report] = await db
     .insert(maintenanceReportsTable)
-    .values({ source: "guest", guestName, roomNumber, title, description, urgency, photos: photoArray, tenantId })
+    .values({
+      source: "guest",
+      guestName,
+      roomNumber,
+      title,
+      description,
+      urgency,
+      photos: photoArray,
+      tenantId,
+      guestId: linkedGuestId,
+      guestSurname,
+      guestMobile: normalisedMobile,
+    })
     .returning();
 
   if (urgency === "urgent") {
@@ -89,12 +141,15 @@ maintenanceRouter.post("/maintenance/staff", requireStaffAuth, async (req, res) 
   const staff = (req as unknown as StaffRequest).staff;
   const tenantId = (req as unknown as TenantRequest).tenantId;
 
-  const { roomNumber, title, description, urgency, photos } = req.body as {
+  const { roomNumber, title, description, urgency, photos, guestId, guestSurname, guestMobile } = req.body as {
     roomNumber?: unknown;
     title?: unknown;
     description?: unknown;
     urgency?: unknown;
     photos?: unknown;
+    guestId?: unknown;
+    guestSurname?: unknown;
+    guestMobile?: unknown;
   };
 
   if (!title || typeof title !== "string" || !title.trim()) {
@@ -137,6 +192,13 @@ maintenanceRouter.post("/maintenance/staff", requireStaffAuth, async (req, res) 
       openedByStaffId: staff.staffId,
       openedByName: staff.displayName,
       tenantId,
+      // Guest attribution (optional from the staff path — captures whoever
+      // reception is reporting on behalf of, or skipped entirely).
+      guestId: typeof guestId === "number" && Number.isFinite(guestId) ? guestId : null,
+      guestSurname: typeof guestSurname === "string" && guestSurname.trim() ? guestSurname.trim() : null,
+      guestMobile: typeof guestMobile === "string" && guestMobile.trim()
+        ? (normalisePhoneNumber(guestMobile) ?? null)
+        : null,
     })
     .returning();
 
@@ -337,6 +399,8 @@ maintenanceRouter.patch("/maintenance/:id/acknowledge", requireStaffAuth, async 
     body: ackBody,
     trigger: "auto_acknowledge",
     linkedMaintenanceReportId: updated.id,
+    reportGuestId: updated.guestId,
+    reportGuestMobile: updated.guestMobile,
   });
 
   res.json(updated);
@@ -403,6 +467,8 @@ maintenanceRouter.patch("/maintenance/:id/resolve", requireStaffAuth, async (req
     body: resolveBody,
     trigger: "auto_resolve",
     linkedMaintenanceReportId: updated.id,
+    reportGuestId: updated.guestId,
+    reportGuestMobile: updated.guestMobile,
   });
 
   res.json(updated);

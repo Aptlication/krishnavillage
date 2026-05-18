@@ -258,6 +258,13 @@ export async function dispatchAutoSms(args: {
   trigger: "auto_acknowledge" | "auto_resolve";
   linkedMaintenanceReportId?: number;
   linkedHousekeepingReportId?: number;
+  /**
+   * Report-attached guest hints. When supplied these take precedence over the
+   * legacy roomNumber-based guest match — cabin/camping/location reports
+   * won't have a numeric room that matches a registration anyway.
+   */
+  reportGuestId?: number | null;
+  reportGuestMobile?: string | null;
 }): Promise<void> {
   try {
     const [tenant] = await db.select().from(tenantsTable).where(eq(tenantsTable.id, args.tenantId));
@@ -267,30 +274,73 @@ export async function dispatchAutoSms(args: {
     if (args.trigger === "auto_acknowledge" && !tenant.smsAutoSendOnAcknowledge) return;
     if (args.trigger === "auto_resolve" && !tenant.smsAutoSendOnResolve) return;
 
-    // Find the guest by roomNumber. If multiple share a room (campers),
-    // pick the most recently updated since they're the active occupant.
-    const guests = await db
-      .select()
-      .from(guestRegistrationsTable)
-      .where(
-        and(
-          eq(guestRegistrationsTable.tenantId, args.tenantId),
-          eq(guestRegistrationsTable.roomNumber, args.roomNumber),
-        ),
-      )
-      .orderBy(desc(guestRegistrationsTable.updatedAt))
-      .limit(1);
-
-    const guest = guests[0];
+    // Resolve the guest in priority order so report-attached attribution
+    // beats the legacy roomNumber-based heuristic.
+    let guest: typeof guestRegistrationsTable.$inferSelect | undefined;
+    let resolvedMobile: string | null = null;
+    let resolvedGuestId: number | null = null;
+    if (args.reportGuestMobile && args.reportGuestMobile.trim()) {
+      // The report row already carries an explicit mobile. Use it as-is.
+      resolvedMobile = args.reportGuestMobile.trim();
+      resolvedGuestId = args.reportGuestId ?? null;
+      // Try to resolve the linked guest record purely for first-name display.
+      if (resolvedGuestId) {
+        const [g] = await db
+          .select()
+          .from(guestRegistrationsTable)
+          .where(
+            and(
+              eq(guestRegistrationsTable.tenantId, args.tenantId),
+              eq(guestRegistrationsTable.id, resolvedGuestId),
+            ),
+          );
+        if (g) guest = g;
+      }
+    } else if (args.reportGuestId) {
+      const [g] = await db
+        .select()
+        .from(guestRegistrationsTable)
+        .where(
+          and(
+            eq(guestRegistrationsTable.tenantId, args.tenantId),
+            eq(guestRegistrationsTable.id, args.reportGuestId),
+          ),
+        );
+      if (g) {
+        guest = g;
+        resolvedMobile = g.mobile ?? null;
+        resolvedGuestId = g.id;
+      }
+    } else {
+      // Legacy fallback: match by roomNumber. Multiple campers in a shared
+      // room? Pick the most recently updated registration as a best effort.
+      const guests = await db
+        .select()
+        .from(guestRegistrationsTable)
+        .where(
+          and(
+            eq(guestRegistrationsTable.tenantId, args.tenantId),
+            eq(guestRegistrationsTable.roomNumber, args.roomNumber),
+          ),
+        )
+        .orderBy(desc(guestRegistrationsTable.updatedAt))
+        .limit(1);
+      guest = guests[0];
+      if (guest) {
+        resolvedMobile = guest.mobile ?? null;
+        resolvedGuestId = guest.id;
+      }
+    }
     const footer = tenant.smsFooter ?? "";
     const finalBody = composeFinalBody(args.body, footer);
 
-    // If the guest has no mobile, still record the attempt as skipped so
-    // staff can see why the SMS didn't go out.
-    if (!guest || !guest.mobile) {
+    // No mobile to send to — record the attempt as skipped so staff can see
+    // why the SMS didn't go out (legacy guests with no mobile, or unmatched
+    // location-type reports).
+    if (!resolvedMobile) {
       await db.insert(smsMessagesTable).values({
         tenantId: args.tenantId,
-        guestId: guest?.id ?? null,
+        guestId: resolvedGuestId,
         to: "",
         body: finalBody,
         sentByStaffId: null,
@@ -309,8 +359,8 @@ export async function dispatchAutoSms(args: {
       .insert(smsMessagesTable)
       .values({
         tenantId: args.tenantId,
-        guestId: guest.id,
-        to: guest.mobile,
+        guestId: resolvedGuestId,
+        to: resolvedMobile,
         body: finalBody,
         sentByStaffId: null,
         sentByName: "auto",
@@ -322,7 +372,10 @@ export async function dispatchAutoSms(args: {
       })
       .returning();
 
-    const result = await sms.sendSms({ to: guest.mobile, body: finalBody });
+    const result = await sms.sendSms({ to: resolvedMobile, body: finalBody });
+    // Touch `guest` so TS doesn't complain about it being unused — also nice
+    // for future template tweaks that might want the full registration row.
+    void guest;
     await db
       .update(smsMessagesTable)
       .set({

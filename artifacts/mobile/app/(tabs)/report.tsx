@@ -80,6 +80,26 @@ async function pickImage(source: "camera" | "library"): Promise<string | null> {
   return `data:${mime};base64,${asset.base64}`;
 }
 
+
+/** Take the last whitespace-separated token of the registered name as the
+ *  surname suggestion. Reception often records just a surname, in which case
+ *  the whole field is returned. */
+function deriveDefaultSurname(fullName: string | undefined | null): string {
+  if (!fullName) return "";
+  const parts = fullName.trim().split(/\s+/);
+  return parts[parts.length - 1] ?? fullName.trim();
+}
+
+/** Mirror the server's AU-focused phone normaliser. Returns null on invalid. */
+function normaliseMobileReport(raw: string): string | null {
+  const cleaned = raw.replace(/[\s\-().]/g, "");
+  if (!cleaned) return null;
+  if (/^\+[1-9]\d{6,14}$/.test(cleaned)) return cleaned;
+  if (/^0\d{9}$/.test(cleaned)) return `+61${cleaned.slice(1)}`;
+  if (/^61\d{9}$/.test(cleaned)) return `+${cleaned}`;
+  return null;
+}
+
 export default function ReportScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -93,6 +113,18 @@ export default function ReportScreen() {
   const [submitState, setSubmitState] = useState<SubmitState>("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [view, setView] = useState<ViewMode>("form");
+
+  // ── Report-kind toggle (Maintenance vs Housekeeping). Both POST to nearly
+  //    identical endpoints — only the URL differs. Housekeeping doesn't
+  //    surface a "history" list (no /housekeeping/my-reports endpoint exists),
+  //    so the history tab is hidden when kind === "housekeeping".
+  const [kind, setKind] = useState<"maintenance" | "housekeeping">("maintenance");
+
+  // ── Mandatory guest attribution per the SMS-notifications product spec.
+  //    Pre-filled from the registered guest record; staff configured these to
+  //    be required so the auto-SMS can always reach the guest.
+  const [guestSurname, setGuestSurname] = useState<string>(deriveDefaultSurname(guest?.name));
+  const [guestMobile, setGuestMobile] = useState<string>(guest?.mobile ?? "");
   const [myReports, setMyReports] = useState<MyReport[]>([]);
   const [reportsLoading, setReportsLoading] = useState(false);
 
@@ -122,6 +154,17 @@ export default function ReportScreen() {
   const bottomPad = insets.bottom + (Platform.OS === "web" ? 34 : 0);
 
   const canSubmit = title.trim().length > 0 && description.trim().length > 0 && !!guest;
+
+
+  // Keep the surname / mobile defaults in sync with the registered guest
+  // record. Only overwrites when the user hasn't edited the field yet (so we
+  // don't blow away a manual correction).
+  useEffect(() => {
+    if (guest?.name && !guestSurname) setGuestSurname(deriveDefaultSurname(guest.name));
+  }, [guest?.name, guestSurname]);
+  useEffect(() => {
+    if (guest?.mobile && !guestMobile) setGuestMobile(guest.mobile);
+  }, [guest?.mobile, guestMobile]);
 
   function showPhotoSourcePicker() {
     if (photos.length >= MAX_PHOTOS) return;
@@ -164,12 +207,29 @@ export default function ReportScreen() {
 
   async function handleSubmit() {
     if (!canSubmit || !guest) return;
+
+    // Mandatory surname + mobile validation. Server rejects too, but we surface
+    // it inline so the guest doesn't have to scroll for the error banner.
+    if (!guestSurname.trim()) {
+      setErrorMsg("Please enter your surname.");
+      setSubmitState("error");
+      return;
+    }
+    const normMobile = normaliseMobileReport(guestMobile.trim());
+    if (!normMobile) {
+      setErrorMsg("That mobile number doesn't look right. Try 0412 345 678.");
+      setSubmitState("error");
+      return;
+    }
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSubmitState("loading");
     setErrorMsg("");
 
+    const endpoint = kind === "housekeeping" ? "/api/housekeeping" : "/api/maintenance";
+
     try {
-      const resp = await fetchWithTenant(`${baseUrl}/api/maintenance`, {
+      const resp = await fetchWithTenant(`${baseUrl}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -179,6 +239,10 @@ export default function ReportScreen() {
           description: description.trim(),
           urgency,
           photos: photos.length > 0 ? photos : undefined,
+          // Mandatory per the SMS feature spec — see api-server's guest-submit
+          // handlers which reject 400 if these are missing/invalid.
+          guestSurname: guestSurname.trim(),
+          guestMobile: normMobile,
         }),
       });
 
@@ -222,7 +286,7 @@ export default function ReportScreen() {
           <View style={styles.headerTop}>
             <View>
               <Text style={[styles.headerTitle, { color: colors.foreground }]}>
-                Report a Fault
+                {kind === "housekeeping" ? "Request Housekeeping" : "Report a Fault"}
               </Text>
               {guest && (
                 <Text style={[styles.headerSub, { color: colors.mutedForeground }]}>
@@ -380,6 +444,90 @@ export default function ReportScreen() {
                 </Text>
               </View>
             )}
+
+            {/* Kind picker — Maintenance vs Housekeeping. POSTs to a different
+                endpoint server-side but the rest of the form is identical. */}
+            <View style={styles.section}>
+              <Text style={[styles.label, { color: colors.foreground }]}>Request type</Text>
+              <View style={styles.urgencyRow}>
+                <Pressable
+                  onPress={() => { setKind("maintenance"); Haptics.selectionAsync(); }}
+                  style={[
+                    styles.urgencyBtn,
+                    {
+                      backgroundColor: kind === "maintenance" ? colors.primary + "20" : colors.muted,
+                      borderColor: kind === "maintenance" ? colors.primary : colors.border,
+                      borderWidth: kind === "maintenance" ? 1.5 : 1,
+                    },
+                  ]}
+                >
+                  <Feather name="tool" size={18} color={kind === "maintenance" ? colors.primary : colors.mutedForeground} />
+                  <View>
+                    <Text style={[styles.urgencyLabel, { color: kind === "maintenance" ? colors.primary : colors.foreground }]}>
+                      Maintenance
+                    </Text>
+                    <Text style={[styles.urgencyHint, { color: colors.mutedForeground }]}>
+                      Faults, repairs
+                    </Text>
+                  </View>
+                </Pressable>
+                <Pressable
+                  onPress={() => { setKind("housekeeping"); Haptics.selectionAsync(); }}
+                  style={[
+                    styles.urgencyBtn,
+                    {
+                      backgroundColor: kind === "housekeeping" ? colors.primary + "20" : colors.muted,
+                      borderColor: kind === "housekeeping" ? colors.primary : colors.border,
+                      borderWidth: kind === "housekeeping" ? 1.5 : 1,
+                    },
+                  ]}
+                >
+                  <Feather name="home" size={18} color={kind === "housekeeping" ? colors.primary : colors.mutedForeground} />
+                  <View>
+                    <Text style={[styles.urgencyLabel, { color: kind === "housekeeping" ? colors.primary : colors.foreground }]}>
+                      Housekeeping
+                    </Text>
+                    <Text style={[styles.urgencyHint, { color: colors.mutedForeground }]}>
+                      Cleaning, linen
+                    </Text>
+                  </View>
+                </Pressable>
+              </View>
+            </View>
+
+            {/* Mandatory guest attribution — surname + mobile. Pre-filled from
+                the registered guest record but editable; server rejects empty/
+                invalid values. */}
+            <View style={styles.section}>
+              <Text style={[styles.label, { color: colors.foreground }]}>Your surname</Text>
+              <TextInput
+                value={guestSurname}
+                onChangeText={setGuestSurname}
+                placeholder="e.g. Sharma"
+                placeholderTextColor={colors.mutedForeground}
+                style={[styles.input, { backgroundColor: colors.card, borderColor: colors.border, color: colors.foreground }]}
+                maxLength={60}
+                autoCapitalize="words"
+                autoComplete="family-name"
+              />
+            </View>
+
+            <View style={styles.section}>
+              <Text style={[styles.label, { color: colors.foreground }]}>Mobile number</Text>
+              <TextInput
+                value={guestMobile}
+                onChangeText={setGuestMobile}
+                placeholder="0412 345 678"
+                placeholderTextColor={colors.mutedForeground}
+                style={[styles.input, { backgroundColor: colors.card, borderColor: colors.border, color: colors.foreground }]}
+                keyboardType="phone-pad"
+                autoComplete="tel"
+                maxLength={20}
+              />
+              <Text style={[styles.charCount, { color: colors.mutedForeground }]}>
+                Required — Krishna Village will SMS you status updates about this request.
+              </Text>
+            </View>
 
             {/* Urgency */}
             <View style={styles.section}>

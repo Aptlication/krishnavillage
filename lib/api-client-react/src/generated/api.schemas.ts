@@ -293,6 +293,9 @@ export interface MaintenanceReport {
   resolutionNote?: string | null;
   etaHours?: number | null;
   etaText?: string | null;
+  guestId?: number | null;
+  guestSurname?: string | null;
+  guestMobile?: string | null;
   createdAt: string;
   resolvedAt?: string | null;
 }
@@ -311,6 +314,11 @@ export interface CreateMaintenanceReportRequest {
   title: string;
   description: string;
   urgency: CreateMaintenanceReportRequestUrgency;
+  /** Mandatory — used to attribute the request and send auto-SMS updates. */
+  guestSurname: string;
+  /** Mandatory — E.164 mobile. The server normalises 0412 345 678 → +61412345678. */
+  guestMobile: string;
+  photos?: string[];
 }
 
 export type CreateStaffMaintenanceReportRequestUrgency =
@@ -326,6 +334,13 @@ export interface CreateStaffMaintenanceReportRequest {
   title: string;
   description: string;
   urgency: CreateStaffMaintenanceReportRequestUrgency;
+  /** Optional — linked existing guest's ID. */
+  guestId?: number | null;
+  /** Optional — captured manually when not linking to an existing guest. */
+  guestSurname?: string | null;
+  /** Optional — E.164 mobile; server normalises. */
+  guestMobile?: string | null;
+  photos?: string[];
 }
 
 export interface AcknowledgeMaintenanceReportRequest {
@@ -396,6 +411,9 @@ export interface HousekeepingReport {
   resolutionNote?: string | null;
   etaHours?: number | null;
   etaText?: string | null;
+  guestId?: number | null;
+  guestSurname?: string | null;
+  guestMobile?: string | null;
   createdAt: string;
   resolvedAt?: string | null;
   photos?: string[] | null;
@@ -414,6 +432,13 @@ export interface CreateStaffHousekeepingReportRequest {
   title: string;
   description: string;
   urgency: CreateStaffHousekeepingReportRequestUrgency;
+  /** Optional — linked existing guest's ID. */
+  guestId?: number | null;
+  /** Optional — captured manually when not linking to an existing guest. */
+  guestSurname?: string | null;
+  /** Optional — E.164 mobile; server normalises. */
+  guestMobile?: string | null;
+  photos?: string[];
 }
 
 export interface AcknowledgeHousekeepingReportRequest {
@@ -436,6 +461,32 @@ export interface ResolveHousekeepingReportRequest {
   resolution: ResolveHousekeepingReportRequestResolution;
   resolutionNote?: string;
 }
+
+export type CreateHousekeepingReportRequestUrgency =
+  (typeof CreateHousekeepingReportRequestUrgency)[keyof typeof CreateHousekeepingReportRequestUrgency];
+
+export const CreateHousekeepingReportRequestUrgency = {
+  urgent: "urgent",
+  non_urgent: "non_urgent",
+} as const;
+
+export interface CreateHousekeepingReportRequest {
+  guestName: string;
+  roomNumber: string;
+  title: string;
+  description: string;
+  urgency: CreateHousekeepingReportRequestUrgency;
+  /** Mandatory — used to attribute the request and send auto-SMS updates. */
+  guestSurname: string;
+  /** Mandatory — E.164 mobile. The server normalises 0412 345 678 → +61412345678. */
+  guestMobile: string;
+  photos?: string[];
+}
+
+export type CreateHousekeepingReport201 = {
+  id: number;
+  status: string;
+};
 
 export type CreateStaffHousekeepingReport201 = {
   id: number;

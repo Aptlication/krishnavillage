@@ -6,6 +6,8 @@ import {
   useAcknowledgeHousekeepingReport,
   useResolveHousekeepingReport,
   useCreateStaffHousekeepingReport,
+  useGetGuests,
+  getGetGuestsQueryKey,
   getGetHousekeepingReportsQueryKey,
   type HousekeepingReport as HousekeepingReportType,
 } from "@workspace/api-client-react";
@@ -111,6 +113,12 @@ export default function Housekeeping() {
   const [createRoom, setCreateRoom] = useState("");
   const [createRoomType, setCreateRoomType] = useState<"room" | "cabin">("room");
   const [createRoomNum, setCreateRoomNum] = useState("");
+  // ── Guest section (Search existing → pre-fill / manual / skip) ────────────
+  const [createGuestId, setCreateGuestId] = useState<number | null>(null);
+  const [createGuestSurname, setCreateGuestSurname] = useState("");
+  const [createGuestMobile, setCreateGuestMobile] = useState("");
+  const [createGuestSearch, setCreateGuestSearch] = useState("");
+  const [createGuestSkip, setCreateGuestSkip] = useState(false);
   const [createTitle, setCreateTitle] = useState("");
   const [createDesc, setCreateDesc] = useState("");
   const [createUrgency, setCreateUrgency] = useState<"urgent" | "non_urgent">("non_urgent");
@@ -187,6 +195,31 @@ export default function Housekeeping() {
     queryClient.invalidateQueries({ queryKey: ["/api/housekeeping"] });
   };
 
+  // ── Existing guests (for the Guest search picker in the create dialog) ────
+  // We fetch all and filter client-side; the list is typically <50 active rows
+  // so a remote search endpoint would be overkill.
+  const { data: allGuests } = useGetGuests(
+    {},
+    {
+      query: {
+        enabled: !!session?.token && showCreate,
+        queryKey: getGetGuestsQueryKey(),
+        refetchInterval: 60_000,
+      },
+    },
+  );
+  const guestMatches = useMemo(() => {
+    const q = createGuestSearch.trim().toLowerCase();
+    if (!q) return [];
+    return (allGuests ?? [])
+      .filter((g) =>
+        g.name.toLowerCase().includes(q) ||
+        g.roomNumber.toLowerCase().includes(q) ||
+        (g.mobile ?? "").toLowerCase().includes(q),
+      )
+      .slice(0, 6);
+  }, [allGuests, createGuestSearch]);
+
   const createMutation = useCreateStaffHousekeepingReport({
     mutation: {
       onSuccess: () => {
@@ -194,6 +227,11 @@ export default function Housekeeping() {
         setCreateRoom("");
         setCreateRoomType("room");
         setCreateRoomNum("");
+        setCreateGuestId(null);
+        setCreateGuestSurname("");
+        setCreateGuestMobile("");
+        setCreateGuestSearch("");
+        setCreateGuestSkip(false);
         setCreateTitle("");
         setCreateDesc("");
         setCreateUrgency("non_urgent");
@@ -390,6 +428,11 @@ export default function Housekeeping() {
     createMutation.mutate({
       data: {
         roomNumber: combinedRoom,
+        // Guest attribution — only send when the section wasn't skipped and
+        // we have at least one field to record.
+        ...(!createGuestSkip && createGuestId ? { guestId: createGuestId } : {}),
+        ...(!createGuestSkip && createGuestSurname.trim() ? { guestSurname: createGuestSurname.trim() } : {}),
+        ...(!createGuestSkip && createGuestMobile.trim() ? { guestMobile: createGuestMobile.trim() } : {}),
         title: createTitle.trim(),
         description: createDesc.trim(),
         urgency: createUrgency,
@@ -1052,6 +1095,103 @@ export default function Housekeeping() {
                   <SelectItem value="urgent">Urgent — needs immediate attention</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            {/* ── Guest section ─────────────────────────────────────────── */}
+            <div className="space-y-2 p-3 rounded-md border bg-muted/30">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-medium">Guest (for SMS notifications)</Label>
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground hover:text-foreground underline"
+                  onClick={() => {
+                    setCreateGuestSkip(!createGuestSkip);
+                    if (!createGuestSkip) {
+                      setCreateGuestId(null);
+                      setCreateGuestSurname("");
+                      setCreateGuestMobile("");
+                      setCreateGuestSearch("");
+                    }
+                  }}
+                >
+                  {createGuestSkip ? "Add guest details" : "Skip"}
+                </button>
+              </div>
+              {!createGuestSkip && (
+                <>
+                  {!createGuestId && (
+                    <div className="relative">
+                      <Input
+                        placeholder="Search existing guests by name, room or mobile…"
+                        value={createGuestSearch}
+                        onChange={(e) => setCreateGuestSearch(e.target.value)}
+                        className="text-sm"
+                      />
+                      {guestMatches.length > 0 && (
+                        <div className="absolute z-10 left-0 right-0 mt-1 bg-popover border rounded-md shadow-md max-h-56 overflow-y-auto">
+                          {guestMatches.map((g) => (
+                            <button
+                              key={g.id}
+                              type="button"
+                              className="w-full text-left px-3 py-2 hover:bg-accent text-sm flex flex-col"
+                              onClick={() => {
+                                setCreateGuestId(g.id);
+                                setCreateGuestSurname(g.name);
+                                setCreateGuestMobile(g.mobile ?? "");
+                                setCreateGuestSearch("");
+                              }}
+                            >
+                              <span className="font-medium">{g.name}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {g.roomNumber} {g.mobile ? `· ${g.mobile}` : "· no mobile on file"}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {createGuestId && (
+                    <div className="flex items-center justify-between gap-2 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-700 rounded px-2.5 py-1.5">
+                      <span className="text-xs">
+                        Linked to <span className="font-semibold">{createGuestSurname || "guest"}</span>
+                        {createGuestMobile && <span className="text-muted-foreground"> · {createGuestMobile}</span>}
+                      </span>
+                      <button
+                        type="button"
+                        className="text-xs text-muted-foreground hover:text-foreground underline"
+                        onClick={() => { setCreateGuestId(null); }}
+                      >
+                        Unlink
+                      </button>
+                    </div>
+                  )}
+                  {createGuestId && !createGuestMobile.trim() && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      ⚠ This guest has no mobile on file — auto-SMS will be skipped unless you enter one below.
+                    </p>
+                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Surname</Label>
+                      <Input
+                        placeholder="Sharma"
+                        value={createGuestSurname}
+                        onChange={(e) => setCreateGuestSurname(e.target.value)}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Mobile</Label>
+                      <Input
+                        placeholder="0412 345 678"
+                        value={createGuestMobile}
+                        onChange={(e) => setCreateGuestMobile(e.target.value)}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
             {createError && (
               <p className="text-sm text-destructive">{createError}</p>
