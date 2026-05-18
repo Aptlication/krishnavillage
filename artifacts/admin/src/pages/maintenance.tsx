@@ -93,6 +93,17 @@ interface ReceiptFile {
   uploading: boolean;
 }
 
+/**
+ * Render a room label that respects the "type prefix" convention stored on
+ * newly-created reports (e.g. "Cabin 4", "CAMP-001", "Pool area"). Legacy rows
+ * stored just a bare number — those still display as "Room {n}" so existing
+ * data looks reasonable.
+ */
+function formatRoomLabel(roomNumber: string): string {
+  if (/^\d+$/.test(roomNumber.trim())) return `Room ${roomNumber.trim()}`;
+  return roomNumber;
+}
+
 function urgencyLabel(urgency: string) {
   return urgency === "urgent" ? "Urgent" : "Non-urgent";
 }
@@ -112,6 +123,8 @@ export default function Maintenance() {
   // ── Create dialog ──────────────────────────────────────────────────────────
   const [showCreate, setShowCreate] = useState(false);
   const [createRoom, setCreateRoom] = useState("");
+  const [createRoomType, setCreateRoomType] = useState<"room" | "cabin" | "camping_site" | "location">("room");
+  const [createRoomNum, setCreateRoomNum] = useState("");
   const [createTitle, setCreateTitle] = useState("");
   const [createDesc, setCreateDesc] = useState("");
   const [createUrgency, setCreateUrgency] = useState<"urgent" | "non_urgent">("non_urgent");
@@ -234,6 +247,8 @@ export default function Maintenance() {
       onSuccess: () => {
         setShowCreate(false);
         setCreateRoom("");
+        setCreateRoomType("room");
+        setCreateRoomNum("");
         setCreateTitle("");
         setCreateDesc("");
         setCreateUrgency("non_urgent");
@@ -428,8 +443,14 @@ export default function Maintenance() {
   }
 
   function handleCreate() {
-    if (!createRoom.trim() || !createTitle.trim() || !createDesc.trim()) {
+    // Validation: title + description always required. Number required for all
+    // types except camping_site (server auto-assigns CAMP-NNN).
+    if (!createTitle.trim() || !createDesc.trim()) {
       setCreateError("Please fill in all fields.");
+      return;
+    }
+    if (createRoomType !== "camping_site" && !createRoomNum.trim()) {
+      setCreateError("Please enter a number / location.");
       return;
     }
     setCreateError("");
@@ -437,7 +458,13 @@ export default function Maintenance() {
       // The generated type for `data` doesn't yet declare `photos`; the server
       // accepts and stores it. Cast is intentional until OpenAPI is regenerated.
       data: {
-        roomNumber: createRoom.trim(),
+        roomNumber: (() => {
+          const n = createRoomNum.trim();
+          if (createRoomType === "cabin") return `Cabin ${n}`;
+          if (createRoomType === "camping_site") return n ? `CAMP-${n}` : "";
+          if (createRoomType === "location") return n;
+          return `Room ${n}`;
+        })(),
         title: createTitle.trim(),
         description: createDesc.trim(),
         urgency: createUrgency as MaintenanceReportUrgency,
@@ -945,7 +972,7 @@ export default function Maintenance() {
                           <User className="w-3 h-3" />
                           {report.source === "staff" ? (report.openedByName ?? report.guestName) : report.guestName}
                         </span>
-                        <span>Room {report.roomNumber}</span>
+                        <span>{formatRoomLabel(report.roomNumber)}</span>
                         <span className="flex items-center gap-1">
                           <Clock className="w-3 h-3" />
                           {format(new Date(report.createdAt), "d MMM yyyy, h:mm a")}
@@ -1165,11 +1192,49 @@ export default function Maintenance() {
               Staff-raised requests are tracked the same way as guest reports and require sign-off before closing.
             </p>
             <div className="space-y-1.5">
-              <Label>Room / Location</Label>
+              <Label>Type</Label>
+              <div className="grid grid-cols-4 gap-2">
+                {(["room", "cabin", "camping_site", "location"] as const).map((t) => {
+                  const label = t === "room" ? "Room" : t === "cabin" ? "Cabin" : t === "camping_site" ? "Camping" : "Location";
+                  return (
+                    <Button
+                      key={t}
+                      type="button"
+                      variant={createRoomType === t ? "default" : "outline"}
+                      onClick={() => setCreateRoomType(t)}
+                      size="sm"
+                    >
+                      {label}
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>
+                {createRoomType === "cabin"
+                  ? "Cabin number"
+                  : createRoomType === "camping_site"
+                  ? "Site number"
+                  : createRoomType === "location"
+                  ? "Location name"
+                  : "Room number"}
+                {createRoomType === "camping_site" && (
+                  <span className="text-muted-foreground font-normal text-xs"> (optional — server auto-assigns CAMP-NNN if blank)</span>
+                )}
+              </Label>
               <Input
-                placeholder="e.g. 12, Laundry, Pool area"
-                value={createRoom}
-                onChange={(e) => setCreateRoom(e.target.value)}
+                placeholder={
+                  createRoomType === "cabin"
+                    ? "e.g. 4"
+                    : createRoomType === "camping_site"
+                    ? "e.g. 001 (or leave blank)"
+                    : createRoomType === "location"
+                    ? "e.g. Laundry, Pool area, Reception"
+                    : "e.g. 12"
+                }
+                value={createRoomNum}
+                onChange={(e) => setCreateRoomNum(e.target.value)}
               />
             </div>
             <div className="space-y-1.5">
@@ -1281,7 +1346,7 @@ export default function Maintenance() {
             <div className="space-y-4 py-2">
               <div className="bg-muted rounded-lg p-3 text-sm">
                 <p className="font-semibold">{escalateTarget.title}</p>
-                <p className="text-muted-foreground mt-0.5">Room {escalateTarget.roomNumber} · {escalateTarget.guestName}</p>
+                <p className="text-muted-foreground mt-0.5">{formatRoomLabel(escalateTarget.roomNumber)} · {escalateTarget.guestName}</p>
               </div>
               <p className="text-sm text-muted-foreground">
                 This will mark the report as <strong>Urgent</strong> and send an immediate push notification to all subscribed staff.
@@ -1317,7 +1382,7 @@ export default function Maintenance() {
             <div className="space-y-4 py-2">
               <div className="bg-muted rounded-lg p-3 text-sm">
                 <p className="font-semibold">{ackTarget.title}</p>
-                <p className="text-muted-foreground mt-0.5">Room {ackTarget.roomNumber} · {ackTarget.guestName}</p>
+                <p className="text-muted-foreground mt-0.5">{formatRoomLabel(ackTarget.roomNumber)} · {ackTarget.guestName}</p>
               </div>
               <p className="text-sm text-muted-foreground">
                 Acknowledging moves this report to <strong>In Progress</strong>. Select your name and add a note to record who it's assigned to or any initial actions taken.
@@ -1423,7 +1488,7 @@ export default function Maintenance() {
             <div className="space-y-4 py-2">
               <div className="bg-muted rounded-lg p-3 text-sm">
                 <p className="font-semibold">{resolveTarget.title}</p>
-                <p className="text-muted-foreground mt-0.5">Room {resolveTarget.roomNumber} · {resolveTarget.guestName}</p>
+                <p className="text-muted-foreground mt-0.5">{formatRoomLabel(resolveTarget.roomNumber)} · {resolveTarget.guestName}</p>
               </div>
               <p className="text-sm text-muted-foreground">
                 Provide a resolution type and a brief note confirming the work is complete. This creates a permanent audit record.
@@ -1696,7 +1761,7 @@ export default function Maintenance() {
                 </div>
               )}
               <p className="text-xs text-muted-foreground">
-                Submitted by {photoViewerTarget.guestName} · Room {photoViewerTarget.roomNumber}
+                Submitted by {photoViewerTarget.guestName} · {formatRoomLabel(photoViewerTarget.roomNumber)}
                 {" · "}{photoViewerTarget.createdAt && new Date(photoViewerTarget.createdAt).toLocaleString()}
               </p>
             </div>
@@ -1737,7 +1802,7 @@ export default function Maintenance() {
             <div className="space-y-4 py-2">
               <div className="bg-muted rounded-lg p-3 text-sm">
                 <p className="font-semibold">{smsTarget.guestName}</p>
-                <p className="text-muted-foreground mt-0.5">Room {smsTarget.roomNumber}</p>
+                <p className="text-muted-foreground mt-0.5">{formatRoomLabel(smsTarget.roomNumber)}</p>
               </div>
               <p className="text-xs text-muted-foreground">
                 The tenant footer is appended automatically. Avoid disclosing private info — SMS is

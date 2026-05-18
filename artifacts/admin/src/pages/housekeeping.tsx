@@ -80,6 +80,16 @@ interface HousekeepingReportItem {
   photos?: string[] | null;
 }
 
+/**
+ * Render a room label that respects the "type prefix" convention stored on
+ * newly-created reports (e.g. "Cabin 4", "CAMP-001"). Legacy rows stored just
+ * a bare number — those still display as "Room {n}" so existing data looks OK.
+ */
+function formatRoomLabel(roomNumber: string): string {
+  if (/^\d+$/.test(roomNumber.trim())) return `Room ${roomNumber.trim()}`;
+  return roomNumber;
+}
+
 function urgencyLabel(urgency: string) {
   return urgency === "urgent" ? "Urgent" : "Non-urgent";
 }
@@ -99,6 +109,8 @@ export default function Housekeeping() {
   // ── Create dialog ──────────────────────────────────────────────────────────
   const [showCreate, setShowCreate] = useState(false);
   const [createRoom, setCreateRoom] = useState("");
+  const [createRoomType, setCreateRoomType] = useState<"room" | "cabin">("room");
+  const [createRoomNum, setCreateRoomNum] = useState("");
   const [createTitle, setCreateTitle] = useState("");
   const [createDesc, setCreateDesc] = useState("");
   const [createUrgency, setCreateUrgency] = useState<"urgent" | "non_urgent">("non_urgent");
@@ -180,6 +192,8 @@ export default function Housekeeping() {
       onSuccess: () => {
         setShowCreate(false);
         setCreateRoom("");
+        setCreateRoomType("room");
+        setCreateRoomNum("");
         setCreateTitle("");
         setCreateDesc("");
         setCreateUrgency("non_urgent");
@@ -364,14 +378,18 @@ export default function Housekeeping() {
   }
 
   function handleCreate() {
-    if (!createRoom.trim() || !createTitle.trim() || !createDesc.trim()) {
+    if (!createRoomNum.trim() || !createTitle.trim() || !createDesc.trim()) {
       setCreateError("Please fill in all fields.");
       return;
     }
     setCreateError("");
+    // Combine the type with the number so the stored roomNumber is self-describing
+    // (e.g. "Cabin 4", "Room 12"). The UI helper formatRoomLabel renders it as-is.
+    const combinedRoom =
+      createRoomType === "cabin" ? `Cabin ${createRoomNum.trim()}` : `Room ${createRoomNum.trim()}`;
     createMutation.mutate({
       data: {
-        roomNumber: createRoom.trim(),
+        roomNumber: combinedRoom,
         title: createTitle.trim(),
         description: createDesc.trim(),
         urgency: createUrgency,
@@ -738,7 +756,7 @@ export default function Housekeeping() {
                         <User className="w-3 h-3" />
                         {report.source === "staff" ? (report.openedByName ?? report.guestName) : report.guestName}
                       </span>
-                      <span>Room {report.roomNumber}</span>
+                      <span>{formatRoomLabel(report.roomNumber)}</span>
                       <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
                         {format(new Date(report.createdAt), "d MMM yyyy, h:mm a")}
@@ -929,11 +947,27 @@ export default function Housekeeping() {
               Housekeeping requests are tracked through the same Open → In Progress → Resolved pipeline as maintenance and require sign-off before closing.
             </p>
             <div className="space-y-1.5">
-              <Label>Room / Location</Label>
+              <Label>Accommodation type</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {(["room", "cabin"] as const).map((t) => (
+                  <Button
+                    key={t}
+                    type="button"
+                    variant={createRoomType === t ? "default" : "outline"}
+                    onClick={() => setCreateRoomType(t)}
+                    size="sm"
+                  >
+                    {t === "room" ? "Room" : "Cabin"}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>{createRoomType === "cabin" ? "Cabin number" : "Room number"}</Label>
               <Input
-                placeholder="e.g. 12, Laundry, Pool area"
-                value={createRoom}
-                onChange={(e) => setCreateRoom(e.target.value)}
+                placeholder={createRoomType === "cabin" ? "e.g. 4" : "e.g. 12"}
+                value={createRoomNum}
+                onChange={(e) => setCreateRoomNum(e.target.value)}
               />
             </div>
             <div className="space-y-1.5">
@@ -1044,7 +1078,7 @@ export default function Housekeeping() {
             <div className="space-y-4 py-2">
               <div className="bg-muted rounded-lg p-3 text-sm">
                 <p className="font-semibold">{escalateTarget.title}</p>
-                <p className="text-muted-foreground mt-0.5">Room {escalateTarget.roomNumber} · {escalateTarget.guestName}</p>
+                <p className="text-muted-foreground mt-0.5">{formatRoomLabel(escalateTarget.roomNumber)} · {escalateTarget.guestName}</p>
               </div>
               <p className="text-sm text-muted-foreground">
                 This will mark the housekeeping report as <strong>Urgent</strong>.
@@ -1080,7 +1114,7 @@ export default function Housekeeping() {
             <div className="space-y-4 py-2">
               <div className="bg-muted rounded-lg p-3 text-sm">
                 <p className="font-semibold">{ackTarget.title}</p>
-                <p className="text-muted-foreground mt-0.5">Room {ackTarget.roomNumber} · {ackTarget.guestName}</p>
+                <p className="text-muted-foreground mt-0.5">{formatRoomLabel(ackTarget.roomNumber)} · {ackTarget.guestName}</p>
               </div>
               <p className="text-sm text-muted-foreground">
                 Acknowledging moves this report to <strong>In Progress</strong>. Select the housekeeping member it's assigned to and add a note with any initial instructions.
@@ -1168,7 +1202,7 @@ export default function Housekeeping() {
             <div className="space-y-4 py-2">
               <div className="bg-muted rounded-lg p-3 text-sm">
                 <p className="font-semibold">{resolveTarget.title}</p>
-                <p className="text-muted-foreground mt-0.5">Room {resolveTarget.roomNumber} · {resolveTarget.guestName}</p>
+                <p className="text-muted-foreground mt-0.5">{formatRoomLabel(resolveTarget.roomNumber)} · {resolveTarget.guestName}</p>
               </div>
               <p className="text-sm text-muted-foreground">
                 Provide a resolution type and a brief note confirming the work is complete. This creates a permanent audit record.
@@ -1342,7 +1376,7 @@ export default function Housekeeping() {
             <div className="space-y-4 py-2">
               <div className="bg-muted rounded-lg p-3 text-sm">
                 <p className="font-semibold">{smsTarget.guestName}</p>
-                <p className="text-muted-foreground mt-0.5">Room {smsTarget.roomNumber}</p>
+                <p className="text-muted-foreground mt-0.5">{formatRoomLabel(smsTarget.roomNumber)}</p>
               </div>
               <p className="text-xs text-muted-foreground">
                 The tenant footer is appended automatically. Avoid disclosing private info — SMS is
