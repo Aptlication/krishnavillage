@@ -622,7 +622,7 @@ export default function ServicesScreen() {
           <View style={[styles.infoBanner, { backgroundColor: colors.warning + "18", borderColor: colors.warning + "40" }]}>
             <Feather name="info" size={14} color={colors.warning} />
             <Text style={[styles.infoBannerText, { color: colors.warning }]}>
-              All additional housekeeping requests attract an additional fee. Contact Reception for further details.
+              All additional housekeeping requests attract an additional fee. Contact reception or order below via your 'Housekeeping' button in your app navigation settings.
             </Text>
           </View>
           <Pressable
