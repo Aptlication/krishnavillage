@@ -49,6 +49,15 @@ export default function SettingsScreen() {
   const farewellOpacity = useRef(new Animated.Value(0)).current;
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [isClearingProfile, setIsClearingProfile] = useState(false);
+  // ── Edit-profile modal state ──────────────────────────────────────────────
+  // Lets returning guests update mobile / type / arrival date. Mobile is the
+  // highest-value field — legacy records may have no number on file.
+  const [editProfileOpen, setEditProfileOpen] = useState(false);
+  const [editMobile, setEditMobile] = useState("");
+  const [editType, setEditType] = useState<"room" | "cabin" | "camping_site">("room");
+  const [editArrival, setEditArrival] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   useEffect(() => {
     AsyncStorage.getItem(PREFS_KEY)

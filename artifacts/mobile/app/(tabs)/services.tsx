@@ -80,6 +80,75 @@ const FALLBACK_FAQ_ITEMS = [
   },
 ];
 
+/**
+ * Village Information — brochure content shown on the Services tab. Static
+ * (not API-driven) so reception can update the printed brochure and the app
+ * in parallel via this constant + a deploy. Items render as expandable rows
+ * similar to FAQs.
+ */
+const VILLAGE_INFO_ITEMS: ReadonlyArray<{ icon: string; title: string; body: string }> = [
+  {
+    icon: "wifi",
+    title: "WiFi access",
+    body: "Network: KFarmFreeWiFi\nPassword: Krsna108",
+  },
+  {
+    icon: "log-out",
+    title: "Check-out",
+    body: "Check-out is by 9:30 am. Please return your key and wristbands to Reception, or place them in the dropbox next to the reception door.",
+  },
+  {
+    icon: "key",
+    title: "Boom Gate",
+    body: "The code is 6626. The gate closes in the late evening and reopens at 4:00 am.",
+  },
+  {
+    icon: "coffee",
+    title: "Meals",
+    body: "All bookings include 3 complimentary meals per day:\n\n• Breakfast — Mon-Sun from 8:30 am at the temple\n• Lunch — Mon-Sun from 12:15 pm at the Krishna Village Dining area\n• Dinner — Mon-Sun from 6:15 pm at the temple\n\nAll meals have at least 3 gluten-free and vegan options. Please check with servers if you have allergies.",
+  },
+  {
+    icon: "activity",
+    title: "Yoga classes & workshops",
+    body: "We offer three yoga classes daily, open for all guests. Doors close at the starting time — please arrive 5 minutes early to settle in. Mats and props are provided.\n\nWe also hold unique workshops daily in the Yoga Hall. Check the Weekly Schedule on the Noticeboard outside Reception for class and workshop times.",
+  },
+  {
+    icon: "droplet",
+    title: "Bathrooms",
+    body: "There are two toilet and shower blocks — one next to the community kitchen and another beside the campgrounds.",
+  },
+  {
+    icon: "refresh-cw",
+    title: "Laundry",
+    body: "Coin-operated washing machines and free hand-washing facilities are located at the bathroom block near the campgrounds. If you need coins, please visit Reception.",
+  },
+  {
+    icon: "book-open",
+    title: "Community Hub",
+    body: "The Community Hub is next to the camping area. It includes books, games, study areas, and free WiFi. You're welcome to relax, read, or connect here during your stay.",
+  },
+  {
+    icon: "thermometer",
+    title: "Kitchen",
+    body: "The kitchen is equipped with fridges, stoves, ovens, toasters, kettles, pots, pans, utensils, and a filtered water tap. Filtered rainwater is also available in the laundry room.\n\nPlease do NOT prepare meat, fish, or eggs onsite.\n\nWash your dishes after use and keep kitchenware in the kitchen.",
+  },
+  {
+    icon: "moon",
+    title: "Quiet time & non-smoking",
+    body: "After 8:30 pm, the village observes quiet time — thank you for helping maintain a peaceful environment for all guests.\n\nPlease note that our property is strictly non-smoking.",
+  },
+  {
+    icon: "home",
+    title: "Temple",
+    body: "Our beautiful temple offers a variety of classes and programs and you are warmly welcome to join. When visiting, please cover your knees and shoulders out of respect for the space.",
+  },
+  {
+    icon: "heart",
+    title: "KV Wellness",
+    body: "Discover Deep Rest and Renewal at KV Wellness. We offer a wide range of holistic treatments including massages, Ayurvedic therapies, coaching, astrology and more.\n\nVisit www.kvwellness.com.au to view the full menu and book your treatment today.",
+  },
+];
+
 const YOGA_DAYS = [
   { short: "Mon", date: "4 May" },
   { short: "Tue", date: "5 May" },
@@ -279,6 +348,8 @@ export default function ServicesScreen() {
   const { opacity: toastOpacity, message: toastMessage, type: toastType, showToast } = useToast();
 
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
+  // Track which Village Information row is expanded (only one at a time, like FAQ).
+  const [openInfoIndex, setOpenInfoIndex] = useState<number | null>(null);
   const [selectedDay, setSelectedDay] = useState<number>(() => {
     const dow = new Date().getDay();
     return (dow + 6) % 7;
@@ -385,6 +456,10 @@ export default function ServicesScreen() {
   const bottomPad = insets.bottom + (Platform.OS === "web" ? 34 : 0);
   const imageWidth = screenWidth - 64;
 
+  function toggleInfo(idx: number) {
+    setOpenInfoIndex((prev) => (prev === idx ? null : idx));
+  }
+
   function toggleFaq(idx: number) {
     Haptics.selectionAsync().catch(() => {});
     setOpenFaqIndex((prev) => (prev === idx ? null : idx));
@@ -417,6 +492,51 @@ export default function ServicesScreen() {
           />
         }
       >
+        {/* ── Village Information (brochure content) ──────────────────── */}
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <View style={styles.cardHeader}>
+            {Platform.OS === "web" ? (
+              <Text style={styles.cardHeaderEmoji}>🏡</Text>
+            ) : (
+              <View style={[styles.cardIconWrap, { backgroundColor: colors.primary + "18" }]}>
+                <Feather name="info" size={20} color={colors.primary} />
+              </View>
+            )}
+            <Text style={[styles.cardTitle, { color: colors.foreground }]}>Village Information</Text>
+          </View>
+          <Text style={[styles.cardBody, { color: colors.mutedForeground, marginBottom: 8 }]}>
+            Tap any item to expand. All essentials are also in your welcome brochure.
+          </Text>
+          {VILLAGE_INFO_ITEMS.map((item, idx) => (
+            <View key={idx}>
+              {idx > 0 && <View style={[styles.divider, { backgroundColor: colors.border }]} />}
+              <Pressable
+                onPress={() => toggleInfo(idx)}
+                style={styles.faqRow}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: openInfoIndex === idx }}
+              >
+                <View style={{ flexDirection: "row", alignItems: "center", flex: 1, gap: 10 }}>
+                  <Feather name={item.icon as never} size={16} color={colors.primary} />
+                  <Text style={[styles.faqQuestion, { color: colors.foreground, flex: 1 }]}>
+                    {item.title}
+                  </Text>
+                </View>
+                <Feather
+                  name={openInfoIndex === idx ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={colors.mutedForeground}
+                />
+              </Pressable>
+              {openInfoIndex === idx && (
+                <Text style={[styles.faqAnswer, { color: colors.mutedForeground }]}>
+                  {item.body}
+                </Text>
+              )}
+            </View>
+          ))}
+        </View>
+
         {/* FAQs */}
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <View style={styles.cardHeader}>
