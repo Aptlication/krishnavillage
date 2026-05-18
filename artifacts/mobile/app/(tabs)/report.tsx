@@ -114,12 +114,6 @@ export default function ReportScreen() {
   const [errorMsg, setErrorMsg] = useState("");
   const [view, setView] = useState<ViewMode>("form");
 
-  // ── Report-kind toggle (Maintenance vs Housekeeping). Both POST to nearly
-  //    identical endpoints — only the URL differs. Housekeeping doesn't
-  //    surface a "history" list (no /housekeeping/my-reports endpoint exists),
-  //    so the history tab is hidden when kind === "housekeeping".
-  const [kind, setKind] = useState<"maintenance" | "housekeeping">("maintenance");
-
   // ── Mandatory guest attribution per the SMS-notifications product spec.
   //    Pre-filled from the registered guest record; staff configured these to
   //    be required so the auto-SMS can always reach the guest.
@@ -226,10 +220,8 @@ export default function ReportScreen() {
     setSubmitState("loading");
     setErrorMsg("");
 
-    const endpoint = kind === "housekeeping" ? "/api/housekeeping" : "/api/maintenance";
-
     try {
-      const resp = await fetchWithTenant(`${baseUrl}${endpoint}`, {
+      const resp = await fetchWithTenant(`${baseUrl}/api/maintenance`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -286,7 +278,7 @@ export default function ReportScreen() {
           <View style={styles.headerTop}>
             <View>
               <Text style={[styles.headerTitle, { color: colors.foreground }]}>
-                {kind === "housekeeping" ? "Request Housekeeping" : "Report a Fault"}
+                Report a Fault
               </Text>
               {guest && (
                 <Text style={[styles.headerSub, { color: colors.mutedForeground }]}>
@@ -444,56 +436,6 @@ export default function ReportScreen() {
                 </Text>
               </View>
             )}
-
-            {/* Kind picker — Maintenance vs Housekeeping. POSTs to a different
-                endpoint server-side but the rest of the form is identical. */}
-            <View style={styles.section}>
-              <Text style={[styles.label, { color: colors.foreground }]}>Request type</Text>
-              <View style={styles.urgencyRow}>
-                <Pressable
-                  onPress={() => { setKind("maintenance"); Haptics.selectionAsync(); }}
-                  style={[
-                    styles.urgencyBtn,
-                    {
-                      backgroundColor: kind === "maintenance" ? colors.primary + "20" : colors.muted,
-                      borderColor: kind === "maintenance" ? colors.primary : colors.border,
-                      borderWidth: kind === "maintenance" ? 1.5 : 1,
-                    },
-                  ]}
-                >
-                  <Feather name="tool" size={18} color={kind === "maintenance" ? colors.primary : colors.mutedForeground} />
-                  <View>
-                    <Text style={[styles.urgencyLabel, { color: kind === "maintenance" ? colors.primary : colors.foreground }]}>
-                      Maintenance
-                    </Text>
-                    <Text style={[styles.urgencyHint, { color: colors.mutedForeground }]}>
-                      Faults, repairs
-                    </Text>
-                  </View>
-                </Pressable>
-                <Pressable
-                  onPress={() => { setKind("housekeeping"); Haptics.selectionAsync(); }}
-                  style={[
-                    styles.urgencyBtn,
-                    {
-                      backgroundColor: kind === "housekeeping" ? colors.primary + "20" : colors.muted,
-                      borderColor: kind === "housekeeping" ? colors.primary : colors.border,
-                      borderWidth: kind === "housekeeping" ? 1.5 : 1,
-                    },
-                  ]}
-                >
-                  <Feather name="home" size={18} color={kind === "housekeeping" ? colors.primary : colors.mutedForeground} />
-                  <View>
-                    <Text style={[styles.urgencyLabel, { color: kind === "housekeeping" ? colors.primary : colors.foreground }]}>
-                      Housekeeping
-                    </Text>
-                    <Text style={[styles.urgencyHint, { color: colors.mutedForeground }]}>
-                      Cleaning, linen
-                    </Text>
-                  </View>
-                </Pressable>
-              </View>
-            </View>
 
             {/* Mandatory guest attribution — surname + mobile. Pre-filled from
                 the registered guest record but editable; server rejects empty/

@@ -24,6 +24,10 @@ function NativeTabLayout() {
         <Icon sf={{ default: "wrench", selected: "wrench.fill" }} />
         <Label>Report Issue</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="housekeeping">
+        <Icon sf={{ default: "sparkles", selected: "sparkles" }} />
+        <Label>Housekeeping</Label>
+      </NativeTabs.Trigger>
       <NativeTabs.Trigger name="settings">
         <Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} />
         <Label>Settings</Label>
@@ -109,6 +113,20 @@ function ClassicTabLayout() {
               <Text style={{ fontSize: 22 }}>🔧</Text>
             ) : (
               <Feather name="tool" size={22} color={color} />
+            ),
+        }}
+      />
+      <Tabs.Screen
+        name="housekeeping"
+        options={{
+          title: "Housekeeping",
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="sparkles" tintColor={color} size={24} />
+            ) : isWeb ? (
+              <Text style={{ fontSize: 22 }}>✨</Text>
+            ) : (
+              <Feather name="star" size={22} color={color} />
             ),
         }}
       />

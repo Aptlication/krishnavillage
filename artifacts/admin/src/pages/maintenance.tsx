@@ -1272,7 +1272,7 @@ export default function Maintenance() {
                     : createRoomType === "camping_site"
                     ? "e.g. 001 (or leave blank)"
                     : createRoomType === "location"
-                    ? "e.g. Laundry, Pool area, Reception"
+                    ? "e.g. Laundry, Communal Kitchen, Reception"
                     : "e.g. 12"
                 }
                 value={createRoomNum}
