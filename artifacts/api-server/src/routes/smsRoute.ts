@@ -8,6 +8,7 @@ import {
 import { and, eq, desc, sql } from "drizzle-orm";
 import { requireStaffAuth, resolveTenant } from "../middlewares/staffAuth";
 import type { TenantRequest, StaffRequest } from "../middlewares/staffAuth";
+import { verifyTwilioSignature } from "../middlewares/twilioSignature";
 import {
   getSmsService,
   composeFinalBody,
@@ -164,12 +165,14 @@ smsRouter.get("/sms/history", requireStaffAuth, async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Twilio status webhook — reconciles "queued" → "delivered" / "failed".
-// One-way only; we never accept inbound messages. Twilio signs requests; for
-// MVP we trust the source by URL secrecy + signature presence.
+// One-way only; we never accept inbound messages. Requests are authenticated
+// by verifying the X-Twilio-Signature header against TWILIO_AUTH_TOKEN (see
+// ../middlewares/twilioSignature.ts) — a third party who guesses the URL
+// cannot spoof status updates.
 // The form-encoded body fields are documented at
 // https://www.twilio.com/docs/sms/api/message-resource#message-status-values
 
-smsRouter.post("/sms/webhook/twilio", resolveTenant, async (req, res) => {
+smsRouter.post("/sms/webhook/twilio", verifyTwilioSignature, resolveTenant, async (req, res) => {
   const { MessageSid, MessageStatus, ErrorMessage } = req.body as {
     MessageSid?: unknown;
     MessageStatus?: unknown;

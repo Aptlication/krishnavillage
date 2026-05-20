@@ -50,3 +50,9 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Environment files — NEVER commit real secrets. `.env.example` is the only
+# env file that belongs in git.
+.env
+.env.*
+!.env.example
