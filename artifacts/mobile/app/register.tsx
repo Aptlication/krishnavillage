@@ -519,7 +519,7 @@ export default function RegisterScreen() {
           )}
 
           <Pressable
-            onPress={handleSubmit}
+            onPress={() => handleSubmit()}
             disabled={isLoading}
             style={({ pressed }) => [
               styles.submitBtn,

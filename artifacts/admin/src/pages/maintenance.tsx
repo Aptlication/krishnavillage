@@ -86,6 +86,12 @@ interface MaintenanceReportItem {
   resolutionNote?: string | null;
   resolvedAt?: string | null;
   photos?: string[] | null;
+  // Guest fields surfaced by the api-server so the Send SMS button can route
+  // directly without an extra lookup. Optional because legacy rows / unlinked
+  // guests may not have them populated.
+  guestId?: number | null;
+  guestMobile?: string | null;
+  guestSurname?: string | null;
 }
 
 interface ReceiptFile {
@@ -161,7 +167,13 @@ export default function Maintenance() {
   // ── Manual Send-SMS dialog state ───────────────────────────────────────────
   // smsTarget holds the report we're composing an SMS for; smsBody is the
   // free-text message; smsError surfaces inline validation/server errors.
-  const [smsTarget, setSmsTarget] = useState<{ id: number; guestName: string; roomNumber: string } | null>(null);
+  const [smsTarget, setSmsTarget] = useState<{
+    id: number;
+    guestName: string;
+    roomNumber: string;
+    mobile: string | null;
+    guestId: number | null;
+  } | null>(null);
   const [smsBody, setSmsBody] = useState("");
   const [smsError, setSmsError] = useState<string | null>(null);
 
@@ -359,22 +371,29 @@ export default function Maintenance() {
 
   // ── Manual SMS send + per-report SMS history ──────────────────────────────
   // We post directly to /api/sms/send rather than going through the codegen
-  // hooks, mirroring the inline-fetch pattern used by updateNoteMutation.
+  // hooks, mirroring the inline-fetch pattern used by updateNoteMutation. The
+  // server requires either guestId (preferred — resolves mobile and links the
+  // sms row to the guest) or `to` (raw E.164 for unlinked sends). We pass
+  // guestId when the report has one, otherwise fall back to the mobile we
+  // displayed in the dialog. linkedMaintenanceReportId is always set so the
+  // audit trail appears on the right card.
   const sendSmsMutation = useMutation({
-    mutationFn: async (args: { reportId: number; body: string }) => {
+    mutationFn: async (args: { reportId: number; guestId: number | null; to: string | null; body: string }) => {
+      const payload: Record<string, unknown> = {
+        body: args.body,
+        linkedMaintenanceReportId: args.reportId,
+      };
+      if (args.guestId !== null) payload["guestId"] = args.guestId;
+      else if (args.to) payload["to"] = args.to;
+      else throw new Error("No mobile on file and no linked guest — cannot send SMS.");
+
       const res = await fetch("/api/sms/send", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...(session?.token ? { Authorization: `Bearer ${session.token}` } : {}),
         },
-        body: JSON.stringify({
-          body: args.body,
-          linkedMaintenanceReportId: args.reportId,
-          // The server will resolve the guest's mobile from the linked report's
-          // roomNumber via the auto-send path. If we wanted to target a specific
-          // guest we'd pass guestId; for now we send to whoever is in the room.
-        }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -1189,7 +1208,13 @@ export default function Maintenance() {
                         variant="outline"
                         className="text-emerald-700 border-emerald-300 hover:bg-emerald-50 dark:text-emerald-400 dark:border-emerald-700"
                         onClick={() => {
-                          setSmsTarget({ id: report.id, guestName: report.guestName, roomNumber: report.roomNumber });
+                          setSmsTarget({
+                            id: report.id,
+                            guestName: report.guestName,
+                            roomNumber: report.roomNumber,
+                            mobile: report.guestMobile ?? null,
+                            guestId: report.guestId ?? null,
+                          });
                           setSmsBody("");
                           setSmsError(null);
                         }}
@@ -1944,6 +1969,9 @@ export default function Maintenance() {
               <div className="bg-muted rounded-lg p-3 text-sm">
                 <p className="font-semibold">{smsTarget.guestName}</p>
                 <p className="text-muted-foreground mt-0.5">{formatRoomLabel(smsTarget.roomNumber)}</p>
+                <p className="text-muted-foreground mt-0.5 font-mono text-xs">
+                  {smsTarget.mobile ?? "no mobile on file"}
+                </p>
               </div>
               <p className="text-xs text-muted-foreground">
                 The tenant footer is appended automatically. Avoid disclosing private info — SMS is
@@ -1975,7 +2003,12 @@ export default function Maintenance() {
               onClick={() => {
                 if (!smsTarget) return;
                 if (!smsBody.trim()) { setSmsError("Message body is required."); return; }
-                sendSmsMutation.mutate({ reportId: smsTarget.id, body: smsBody.trim() });
+                sendSmsMutation.mutate({
+                  reportId: smsTarget.id,
+                  guestId: smsTarget.guestId,
+                  to: smsTarget.mobile,
+                  body: smsBody.trim(),
+                });
               }}
               disabled={sendSmsMutation.isPending || !smsBody.trim()}
             >

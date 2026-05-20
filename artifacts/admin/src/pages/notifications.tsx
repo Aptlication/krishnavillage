@@ -8,9 +8,10 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
-import { Send, History, CheckCircle2, Megaphone, User } from "lucide-react";
+import { Send, History, CheckCircle2, Megaphone, User, MessageSquare, BellRing } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSearch } from "wouter";
 
@@ -28,6 +29,16 @@ export default function Notifications() {
   const [body, setBody] = useState("");
   const [type, setType] = useState<NotificationType>("general");
   const [targetRoom, setTargetRoom] = useState(prefilledRoom);
+
+  // Delivery channels — staff can send via push, SMS, or both. Push is the
+  // historic default so it starts checked; SMS is opt-in per send. Auto-derived
+  // recipient counts below tell staff how many will actually receive the SMS
+  // (only guests with a mobile on file).
+  const [sendPush, setSendPush] = useState(true);
+  const [sendSms, setSendSms] = useState(false);
+
+  // Tracks per-send dispatch state for the SMS path (push uses its own mutation).
+  const [smsSending, setSmsSending] = useState(false);
 
   useEffect(() => {
     setTargetRoom(prefilledRoom);
@@ -64,6 +75,28 @@ export default function Notifications() {
     return `Room ${room} — ${names.length} guests`;
   };
 
+  // ── SMS recipient resolution ────────────────────────────────────────────────
+  // Given the current targetRoom selection, work out which guests would
+  // actually receive an SMS (need a mobile on file) and which would be
+  // skipped. Used by the inline counter under the SMS checkbox so staff
+  // know exactly how many messages they're about to fire.
+  //
+  // Local Guest shape — the codegen-generated type doesn't propagate cleanly
+  // through useGetGuests's return inference (same reason the pre-existing
+  // reduce/filter callbacks above trip noImplicitAny). Declared inline so
+  // our new SMS code is at least locally type-safe.
+  type GuestLite = { id: number; name?: string; roomNumber?: string | null; mobile?: string | null };
+  const smsRecipients = (guests ?? []).filter((g: GuestLite) => {
+    if (!g.mobile) return false;
+    if (targetRoom === "all") return true;
+    return g.roomNumber === targetRoom;
+  });
+  const smsSkipped = (guests ?? []).filter((g: GuestLite) => {
+    if (g.mobile) return false;
+    if (targetRoom === "all") return true;
+    return g.roomNumber === targetRoom;
+  });
+
   const sendMutation = useSendNotification();
   const { data: history, isLoading: isHistoryLoading, isError: isHistoryError } = useGetNotifications(
     {},
@@ -96,45 +129,126 @@ export default function Notifications() {
     }
   }, [isHistoryError, toast]);
 
-  const handleSend = (e: React.FormEvent) => {
+  /**
+   * Dispatch the composed message via every checked channel. Push and SMS
+   * fire independently so a partial failure on one channel doesn't block
+   * the other; the toast at the end summarises results across channels.
+   */
+  const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || !body.trim() || !targetRoom.trim()) {
       toast({
         title: "Missing fields",
         description: "Please fill in all fields before sending.",
-        variant: "destructive"
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!sendPush && !sendSms) {
+      toast({
+        title: "No channel selected",
+        description: "Tick at least one of Push or SMS before sending.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (sendSms && smsRecipients.length === 0) {
+      toast({
+        title: "No SMS recipients",
+        description:
+          targetRoom === "all"
+            ? "None of the registered guests have a mobile on file."
+            : `Room ${targetRoom} has no guest with a mobile on file.`,
+        variant: "destructive",
       });
       return;
     }
 
-    sendMutation.mutate(
-      {
-        data: {
-          title,
-          body,
-          type,
-          targetRoom,
-        },
-      },
-      {
-        onSuccess: (result) => {
-          toast({
-            title: "Notification Sent",
-            description: `Delivered to ${result.recipientCount} recipient(s).`,
-          });
-          setTitle("");
-          setBody("");
-          queryClient.invalidateQueries({ queryKey: getGetNotificationsQueryKey() });
-        },
-        onError: () => {
-          toast({
-            title: "Error",
-            description: "Failed to send notification. Please check your connection.",
-            variant: "destructive"
-          });
-        }
-      }
-    );
+    // ── Push (existing mutation) ──────────────────────────────────────────────
+    const pushPromise: Promise<{ recipientCount: number } | null> = sendPush
+      ? new Promise((resolve) => {
+          sendMutation.mutate(
+            { data: { title, body, type, targetRoom } },
+            {
+              onSuccess: (result: { recipientCount: number }) => resolve(result),
+              onError: () => resolve(null),
+            },
+          );
+        })
+      : Promise.resolve(null);
+
+    // ── SMS (fanout via /api/sms/send, one call per recipient) ────────────────
+    // Done client-side rather than via a new broadcast endpoint to keep this
+    // change scoped to the admin app. Each call writes its own row in
+    // sms_messages, so the SMS History page still shows individual deliveries.
+    const smsPromise: Promise<{ sent: number; failed: number }> = sendSms
+      ? (async () => {
+          setSmsSending(true);
+          let sent = 0;
+          let failed = 0;
+          // Reasonable single-message body for broadcast — title + body so it
+          // reads naturally as one SMS. Staff can refine wording in the body
+          // field before sending if they want; the body is already free-text.
+          const smsBody = title.trim()
+            ? `${title.trim()} — ${body.trim()}`
+            : body.trim();
+          await Promise.all(
+            smsRecipients.map(async (g: GuestLite) => {
+              try {
+                const res = await fetch("/api/sms/send", {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${session?.token ?? ""}`,
+                  },
+                  body: JSON.stringify({
+                    guestId: g.id,
+                    body: smsBody,
+                    trigger: "broadcast",
+                  }),
+                });
+                if (res.ok) sent += 1;
+                else failed += 1;
+              } catch {
+                failed += 1;
+              }
+            }),
+          );
+          setSmsSending(false);
+          return { sent, failed };
+        })()
+      : Promise.resolve({ sent: 0, failed: 0 });
+
+    const [pushResult, smsResult] = await Promise.all([pushPromise, smsPromise]);
+
+    // Build a combined toast summarising both channels.
+    const parts: string[] = [];
+    if (sendPush) {
+      parts.push(
+        pushResult
+          ? `Push: delivered to ${pushResult.recipientCount} device${pushResult.recipientCount === 1 ? "" : "s"}`
+          : "Push: failed",
+      );
+    }
+    if (sendSms) {
+      const total = smsResult.sent + smsResult.failed;
+      const skippedNote = smsSkipped.length > 0 ? `, ${smsSkipped.length} skipped (no mobile)` : "";
+      parts.push(
+        `SMS: ${smsResult.sent}/${total} sent${smsResult.failed > 0 ? `, ${smsResult.failed} failed` : ""}${skippedNote}`,
+      );
+    }
+    const anyFailure =
+      (sendPush && !pushResult) || (sendSms && smsResult.failed > 0);
+
+    toast({
+      title: anyFailure ? "Sent with errors" : "Notification sent",
+      description: parts.join(" · "),
+      variant: anyFailure ? "destructive" : "default",
+    });
+
+    setTitle("");
+    setBody("");
+    queryClient.invalidateQueries({ queryKey: getGetNotificationsQueryKey() });
   };
 
   const typeLabels = {
@@ -194,6 +308,69 @@ export default function Notifications() {
                   )}
                 </div>
 
+                {/* ── Delivery channels ────────────────────────────────────
+                    Staff pick one or both channels. Push reaches in-app
+                    devices via web-push; SMS reaches the guest's mobile via
+                    Twilio. Only guests with a mobile on file receive SMS. */}
+                <div className="space-y-2">
+                  <Label>Delivery Channels</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label
+                      className={`flex items-start gap-2 rounded-md border p-3 cursor-pointer transition-colors ${
+                        sendPush ? "border-primary/50 bg-primary/5" : "border-border hover:bg-accent/30"
+                      }`}
+                    >
+                      <Checkbox
+                        checked={sendPush}
+                        onCheckedChange={(c) => setSendPush(c === true)}
+                        data-testid="channel-push"
+                        className="mt-0.5"
+                      />
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1.5 text-sm font-medium">
+                          <BellRing className="w-3.5 h-3.5 text-primary" />
+                          Push
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          In-app guest devices
+                        </p>
+                      </div>
+                    </label>
+                    <label
+                      className={`flex items-start gap-2 rounded-md border p-3 cursor-pointer transition-colors ${
+                        sendSms ? "border-emerald-500/50 bg-emerald-500/5" : "border-border hover:bg-accent/30"
+                      }`}
+                    >
+                      <Checkbox
+                        checked={sendSms}
+                        onCheckedChange={(c) => setSendSms(c === true)}
+                        data-testid="channel-sms"
+                        className="mt-0.5"
+                      />
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1.5 text-sm font-medium">
+                          <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
+                          SMS
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Twilio · guest mobiles
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                  {sendSms && (
+                    <p className="text-xs text-muted-foreground" data-testid="sms-eligibility">
+                      Will SMS <span className="font-medium text-foreground">{smsRecipients.length}</span> guest{smsRecipients.length === 1 ? "" : "s"}
+                      {smsSkipped.length > 0 && (
+                        <> · skipping {smsSkipped.length} (no mobile on file)</>
+                      )}
+                      {smsRecipients.length === 0 && (
+                        <span className="text-destructive"> — add a mobile to at least one guest in this scope first.</span>
+                      )}
+                    </p>
+                  )}
+                </div>
+
                 <div className="space-y-2">
                   <Label htmlFor="type">Message Type</Label>
                   <Select value={type} onValueChange={(val) => setType(val as NotificationType)}>
@@ -236,15 +413,19 @@ export default function Notifications() {
                 <Button
                   type="submit"
                   className="w-full"
-                  disabled={sendMutation.isPending}
+                  disabled={sendMutation.isPending || smsSending || (!sendPush && !sendSms)}
                   data-testid="button-send"
                 >
-                  {sendMutation.isPending ? (
+                  {sendMutation.isPending || smsSending ? (
                     "Sending..."
                   ) : (
                     <>
                       <Send className="w-4 h-4 mr-2" />
-                      Send Notification
+                      {sendPush && sendSms
+                        ? "Send via Push & SMS"
+                        : sendSms
+                          ? "Send via SMS"
+                          : "Send Notification"}
                     </>
                   )}
                 </Button>

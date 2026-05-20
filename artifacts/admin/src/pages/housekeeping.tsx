@@ -80,6 +80,12 @@ interface HousekeepingReportItem {
   resolutionNote?: string | null;
   resolvedAt?: string | null;
   photos?: string[] | null;
+  // Guest fields surfaced by the api-server so the Send SMS button can route
+  // directly without an extra lookup. Optional because legacy rows / unlinked
+  // guests may not have them populated.
+  guestId?: number | null;
+  guestMobile?: string | null;
+  guestSurname?: string | null;
 }
 
 /**
@@ -90,6 +96,48 @@ interface HousekeepingReportItem {
 function formatRoomLabel(roomNumber: string): string {
   if (/^\d+$/.test(roomNumber.trim())) return `Room ${roomNumber.trim()}`;
   return roomNumber;
+}
+
+/**
+ * Pull the first non-whitespace token from a registered name. Reception enters
+ * names inconsistently ("Sharma" vs "Anita Sharma") so we just take the first
+ * word — matches what the server's deriveFirstName does.
+ */
+function deriveFirstName(fullName: string): string {
+  const first = fullName.trim().split(/\s+/)[0];
+  return first && first.length > 0 ? first : fullName.trim();
+}
+
+/**
+ * Status-aware starter message for the manual Send-SMS dialog. Staff can edit
+ * it before sending — this is just a pre-fill so the textarea isn't empty.
+ * Kept close to the server-side templates so the look is consistent, but
+ * deliberately not identical: this path is for ad-hoc updates, not auto-fires.
+ */
+function renderHousekeepingStarter(args: {
+  firstName: string;
+  roomLabel: string;
+  staffName: string;
+  status: string;
+}): string {
+  const team = "Housekeeping";
+  const by = args.staffName ? ` by ${args.staffName}` : "";
+  if (args.status === "open") {
+    return (
+      `Hi ${args.firstName}, we've received your housekeeping request for ${args.roomLabel} ` +
+      `and a member of ${team} will action it shortly. We'll keep you posted.`
+    );
+  }
+  if (args.status === "in_progress") {
+    return (
+      `Hi ${args.firstName}, your housekeeping request for ${args.roomLabel} is in the pipeline ` +
+      `and is being actioned${by} from ${team}. You will receive further confirmation of processing soon!`
+    );
+  }
+  // resolved — handy for follow-ups even though auto-SMS already fired on sign-off
+  return (
+    `Hi ${args.firstName}, your housekeeping request for ${args.roomLabel} has been actioned${by} from ${team}.`
+  );
 }
 
 function urgencyLabel(urgency: string) {
@@ -146,7 +194,17 @@ export default function Housekeeping() {
   // ── Manual Send-SMS dialog state ───────────────────────────────────────────
   // smsTarget holds the report we're composing an SMS for; smsBody is the
   // free-text message; smsError surfaces inline validation/server errors.
-  const [smsTarget, setSmsTarget] = useState<{ id: number; guestName: string; roomNumber: string } | null>(null);
+  // Carries enough context (status, mobile) for the dialog to show the
+  // recipient number, choose the right starter template, and refuse to send
+  // when no mobile is on file.
+  const [smsTarget, setSmsTarget] = useState<{
+    id: number;
+    guestName: string;
+    roomNumber: string;
+    status: string;
+    mobile: string | null;
+    guestId: number | null;
+  } | null>(null);
   const [smsBody, setSmsBody] = useState("");
   const [smsError, setSmsError] = useState<string | null>(null);
 
@@ -302,22 +360,29 @@ export default function Housekeeping() {
 
   // ── Manual SMS send + per-report SMS history ──────────────────────────────
   // We post directly to /api/sms/send rather than going through the codegen
-  // hooks, mirroring the inline-fetch pattern used by updateNoteMutation.
+  // hooks, mirroring the inline-fetch pattern used by updateNoteMutation. The
+  // server requires either guestId (preferred — resolves mobile and links the
+  // sms row to the guest) or `to` (raw E.164 for unlinked sends). We pass
+  // guestId when the report has one, otherwise fall back to the mobile we
+  // displayed in the dialog. linkedHousekeepingReportId is always set so the
+  // audit trail appears on the right card.
   const sendSmsMutation = useMutation({
-    mutationFn: async (args: { reportId: number; body: string }) => {
+    mutationFn: async (args: { reportId: number; guestId: number | null; to: string | null; body: string }) => {
+      const payload: Record<string, unknown> = {
+        body: args.body,
+        linkedHousekeepingReportId: args.reportId,
+      };
+      if (args.guestId !== null) payload["guestId"] = args.guestId;
+      else if (args.to) payload["to"] = args.to;
+      else throw new Error("No mobile on file and no linked guest — cannot send SMS.");
+
       const res = await fetch("/api/sms/send", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...(session?.token ? { Authorization: `Bearer ${session.token}` } : {}),
         },
-        body: JSON.stringify({
-          body: args.body,
-          linkedHousekeepingReportId: args.reportId,
-          // The server will resolve the guest's mobile from the linked report's
-          // roomNumber via the auto-send path. If we wanted to target a specific
-          // guest we'd pass guestId; for now we send to whoever is in the room.
-        }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -969,6 +1034,44 @@ export default function Housekeeping() {
                         {report.resolutionNote ? "Edit note" : "Add note"}
                       </Button>
                     )}
+
+                    {/* Send SMS — opens the manual dialog with a status-aware
+                        starter template pre-filled. Disabled when no mobile is
+                        on file; the tooltip explains why. */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      data-testid="send-sms-btn"
+                      className="text-emerald-700 border-emerald-200 hover:bg-emerald-50 disabled:opacity-50"
+                      disabled={!report.guestMobile}
+                      title={!report.guestMobile ? "No mobile on file for this guest" : "Send a custom SMS to the guest"}
+                      onClick={() => {
+                        const firstName = deriveFirstName(report.guestName);
+                        const roomLabel = formatRoomLabel(report.roomNumber);
+                        const staffName =
+                          report.resolvedByName ?? report.inProgressByName ?? "";
+                        setSmsTarget({
+                          id: report.id,
+                          guestName: report.guestName,
+                          roomNumber: report.roomNumber,
+                          status: report.status,
+                          mobile: report.guestMobile ?? null,
+                          guestId: report.guestId ?? null,
+                        });
+                        setSmsBody(
+                          renderHousekeepingStarter({
+                            firstName,
+                            roomLabel,
+                            staffName,
+                            status: report.status,
+                          }),
+                        );
+                        setSmsError(null);
+                      }}
+                    >
+                      <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
+                      Send SMS
+                    </Button>
                   </div>
                 </div>
               </CardContent>
@@ -1517,6 +1620,9 @@ export default function Housekeeping() {
               <div className="bg-muted rounded-lg p-3 text-sm">
                 <p className="font-semibold">{smsTarget.guestName}</p>
                 <p className="text-muted-foreground mt-0.5">{formatRoomLabel(smsTarget.roomNumber)}</p>
+                <p className="text-muted-foreground mt-0.5 font-mono text-xs">
+                  {smsTarget.mobile ?? "no mobile on file"}
+                </p>
               </div>
               <p className="text-xs text-muted-foreground">
                 The tenant footer is appended automatically. Avoid disclosing private info — SMS is
@@ -1548,7 +1654,12 @@ export default function Housekeeping() {
               onClick={() => {
                 if (!smsTarget) return;
                 if (!smsBody.trim()) { setSmsError("Message body is required."); return; }
-                sendSmsMutation.mutate({ reportId: smsTarget.id, body: smsBody.trim() });
+                sendSmsMutation.mutate({
+                  reportId: smsTarget.id,
+                  guestId: smsTarget.guestId,
+                  to: smsTarget.mobile,
+                  body: smsBody.trim(),
+                });
               }}
               disabled={sendSmsMutation.isPending || !smsBody.trim()}
             >

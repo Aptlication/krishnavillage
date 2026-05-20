@@ -41,7 +41,7 @@ const DEFAULT_PREFS: NotificationPrefs = {
 export default function SettingsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { guest, clearGuest } = useGuest();
+  const { guest, setGuest, clearGuest } = useGuest();
   const [prefs, setPrefs] = useState<NotificationPrefs>(DEFAULT_PREFS);
   const [notifStatus, setNotifStatus] = useState<string>("unknown");
   const [showFarewell, setShowFarewell] = useState(false);
